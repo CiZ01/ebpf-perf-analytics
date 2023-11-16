@@ -227,7 +227,7 @@ int xdp_6to4_func(struct xdp_md *ctx)
             // devo ricalcolare data
             void *data = (void *)(long)ctx->data;
             void *data_end = (void *)(long)ctx->data_end;
-
+4
             eth = (void *)(long)ctx->data;
             if (eth + 1 > data_end)
                 return XDP_DROP;

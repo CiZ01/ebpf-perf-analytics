@@ -1,0 +1,38 @@
+sudo python nat64/router.py -c nat64/router.conf
+Disassemble of BPF program xdp_router_func:
+   0: (b7) r0 = 1
+   1: (61) r6 = *(u32*)(r1 +4)
+   2: (61) r7 = *(u32*)(r1 +0)
+   3: (bf) r1 = r7
+   4: (07) r1 += 196
+   5: (2d) if r1 > r6 goto pc+22 <28>
+   6: (b7) r1 = 111
+   7: (6b) *(u16*)(r10 -16) = r1
+   8: (18) r1 = 0x7669727261206975
+  10:      (64-bit upper word)
+  10: (7b) *(u64*)(r10 -24) = r1
+  11: (18) r1 = 0x712061206f6e6966
+  13:      (64-bit upper word)
+  13: (7b) *(u64*)(r10 -32) = r1
+  14: (bf) r1 = r10
+  15: (07) r1 += -32
+  16: (b7) r2 = 18
+  17: (85) call bpf_trace_printk#6
+  18: (71) r1 = *(u8*)(r7 +12)
+  19: (71) r2 = *(u8*)(r7 +13)
+  20: (67) r2 <<= 8
+  21: (4f) r2 |= r1
+  22: (b7) r0 = 2
+  23: (55) if r2 != 56710 goto pc+4 <28>
+  24: (07) r7 += 1796
+  25: (b7) r0 = 1
+  26: (2d) if r7 > r6 goto pc+1 <28>
+  27: (b7) r0 = 2
+  28: (95) exit
+[0;34m[INFO][0m: Attached XDP program to veth2
+
+[0;34m[INFO][0m: Running...
+[0;34m[INFO][0m: Stopping...
+[0;34m[INFO][0m: Removing filter from device
+[0;34m[INFO][0m: Removed XDP program from veth2
+[0;32m[OK][0m: Done
