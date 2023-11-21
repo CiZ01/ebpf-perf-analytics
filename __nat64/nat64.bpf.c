@@ -410,7 +410,7 @@ int xdp_4to6_func(struct xdp_md *ctx)
 
             // preparo i parametri per la ricerca all'interno della fib
             fib_params.family = AF_INET;
-            fib_params.ipv4_dst = dst_v4;
+                            dst = dst_v4;
             fib_params.ifindex = my_ifindex;
         } // NAT64 prefix check
         rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), BPF_FIB_LOOKUP_DIRECT);
