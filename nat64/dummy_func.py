@@ -3,6 +3,8 @@ from color import *
 import sys
 from pyroute2 import IPRoute
 
+flags = BPF.XDP_FLAGS_SKB_MODE
+
 if len(sys.argv) > 1:
     interface = sys.argv[1]
 else:
@@ -20,7 +22,7 @@ b = BPF(src_file="router.bpf.c", cflags=["-w"])
 
 in_fn = b.load_func("xdp_pass_func", BPF.XDP)
 
-b.attach_xdp(interface, in_fn, 0)
+b.attach_xdp(interface, in_fn, flags)
 printx("Running...", "info")
 while True:
     try:
@@ -30,4 +32,4 @@ while True:
         break
 
 printx("Removing filter from device", "info")
-b.remove_xdp(interface, 0)
+b.remove_xdp(interface, flags)

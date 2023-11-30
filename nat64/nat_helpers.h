@@ -252,44 +252,8 @@ static inline __u16 csum_fold_helper(__u64 csum)
     return ~csum;
 }
 
-// function from https://github.com/xdp-project/bpf-examples/blob/master/nat64-bpf/nat64_kern.c
-static __always_inline void update_icmp_checksum(struct xdp_md *ctx, struct ipv6hdr *ip6h, void *icmp_before,
-                                                 void *icmp_after, __u8 add)
-{
-    void *data = (void *)(unsigned long long)ctx->data;
-    struct icmpv6_pseudo ph = {
-        .nh = IPPROTO_ICMPV6, .saddr = ip6h->saddr, .daddr = ip6h->daddr, .len = ip6h->payload_len};
-    __u16 h_before, h_after, offset;
-    __u32 csum, u_before, u_after;
-
-    /* Do checksum update in two passes: first compute the incremental
-     * checksum update of the ICMPv6 pseudo header, update the checksum
-     * using bpf_l4_csum_replace(), and then do a separate update for the
-     * ICMP type and code (which is two consecutive bytes, so cast them to
-     * u16). The bpf_csum_diff() helper can be used to compute the
-     * incremental update of the full block, whereas the
-     * bpf_l4_csum_replace() helper can do the two-byte diff and update by
-     * itself.
-     */
-    csum = bpf_csum_diff((__be32 *)&ph, add ? 0 : sizeof(ph), (__be32 *)&ph, add ? sizeof(ph) : 0, 0);
-
-    offset = ((void *)icmp_after - data) + 2;
-    /* first two bytes of ICMP header, type and code */
-    h_before = *(__u16 *)icmp_before;
-    h_after = *(__u16 *)icmp_after;
-
-    /* last four bytes of ICMP header, the data union */
-    u_before = *(__u32 *)(icmp_before + 4);
-    u_after = *(__u32 *)(icmp_after + 4);
-
-    bpf_l4_csum_replace(ctx, offset, 0, csum, BPF_F_PSEUDO_HDR);
-    bpf_l4_csum_replace(ctx, offset, h_before, h_after, 2);
-
-    if (u_before != u_after)
-        bpf_l4_csum_replace(ctx, offset, u_before, u_after, 4);
-}
-
 // from 4 to 6
+// there is an errore, return 0
 static __always_inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
 {
 
@@ -307,6 +271,7 @@ static __always_inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
     sum = (sum >> 16) + (sum & 0xffff);
     sum += (sum >> 16);
     ret = ~sum;
+
     return (ret);
 }
 
@@ -316,4 +281,12 @@ static __always_inline int ipv6_addr_equal(struct in6_addr *a, struct in6_addr *
         a->s6_addr32[2] == b->s6_addr32[2] && a->s6_addr32[3] == b->s6_addr32[3])
         return 1;
     return 0;
+}
+
+static __always_inline int ip_decrease_ttl(struct iphdr *iph)
+{
+    __u32 check = iph->check;
+    check += bpf_htons(0x0100);
+    iph->check = (__u16)(check + (check >= 0xFFFF));
+    return --iph->ttl;
 }

@@ -19,6 +19,8 @@ PROTO = {
     "58": "IPv6-ICMP",
 }
 
+flags = BPF.XDP_FLAGS_SKB_MODE
+
 
 class in6_addr(Structure):
     _fields_ = [("in6_u", c_uint8 * 16)]
@@ -102,7 +104,7 @@ if True:
         interface = interfaces_6to4[i]
         in_idx = in_idxs[i]
 
-        b.attach_xdp(interface, six_four_fn, 0)
+        b.attach_xdp(interface, six_four_fn, flags)
         printx(f"Attached XDP program 6to4 to {interface}", "info")
 
 if True:
@@ -111,7 +113,7 @@ if True:
         interface = interfaces_4to6[i]
         in_idx = in_idxs[i]
 
-        b.attach_xdp(interface, four_six_fn, 0)
+        b.attach_xdp(interface, four_six_fn, flags)
         printx(f"Attached XDP program 4to6 to {interface}", "info")
 print()
 
@@ -158,7 +160,7 @@ while True:
 
 printx("Removing filter from device", "info")
 for interace in interfaces_6to4 + interfaces_4to6:
-    b.remove_xdp(interace, 0)
+    b.remove_xdp(interace, flags)
     printx(f"Removed XDP program from {interace}", "info")
 
 printx("Done", "ok")

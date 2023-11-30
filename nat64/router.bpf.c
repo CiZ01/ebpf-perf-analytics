@@ -11,6 +11,19 @@
 #define IP_BOUNDARY_START 0xc0a80901 // 192.168.9.1
 #define IP_BOUNDARY_END 0xc0a809fe   // 192.168.9.254
 
+/* static __always_inline __u16 csum_fold_helper(__u32 csum)
+{
+    csum = (csum >> 16) + (csum & 0xFFFF);
+    csum += (csum >> 16);
+    return (__u16)~csum;
+}
+
+static __always_inline void ipv4_csum(void *data_start, int data_size, __u32 *csum)
+{
+    *csum = bpf_csum_diff((__be32 *)data_start, 0, (__be32 *)data_start, data_size, 0);
+    *csum = csum_fold_helper(*csum);
+} */
+
 // nattinh table
 BPF_HASH(natting_table, u32, struct in6_addr, 256);
 
@@ -211,7 +224,7 @@ int xdp_router_func(struct xdp_md *ctx)
             if (icmp6h + 1 > data_end)
                 return XDP_DROP;
 
-            // bpf_trace_printk("[IPV6]: icmp type -> %d", icmp6h->icmp6_type);
+            bpf_trace_printk("[IPV6]: icmp type -> %d", icmp6h->icmp6_type);
 
             // ready to parse the icmpv6 header in icmp
             struct icmphdr tmp_icmp;
@@ -236,18 +249,19 @@ int xdp_router_func(struct xdp_md *ctx)
 
             // bpf_trace_printk("inside write icmp with type: %d ,request is %d", icmp->type, ICMPV6_ECHO_REQUEST);
             *icmp = tmp_icmp;
-
+            __u32 csum = 0;
             // set the checksum
-            icmp->checksum = 0x0000;
-            icmp->checksum =
-                csum_fold_helper(bpf_csum_diff((__be32 *)icmp, 0, (__be32 *)icmp, sizeof(struct icmphdr), 0));
+            icmp->checksum = 0;
+            csum = bpf_csum_diff((__be32 *)icmp, 0, (__be32 *)icmp, sizeof(*icmp), 0);
+            icmp->checksum = csum;
             dst_hdr.protocol = IPPROTO_ICMP;
 
             // DEBUG
             ip_protocol = dst_hdr.protocol;
-            bpf_trace_printk("checksum: %x", icmp->checksum);
+
         } // icmpv6
 
+        // this work
         dst_hdr.check = csum_fold_helper(bpf_csum_diff((__be32 *)&dst_hdr, 0, (__be32 *)&dst_hdr, sizeof(dst_hdr), 0));
 
         if (bpf_xdp_adjust_head(ctx, (int)sizeof(struct ipv6hdr) - (int)sizeof(struct iphdr)))
@@ -275,12 +289,17 @@ int xdp_router_func(struct xdp_md *ctx)
 
         *iph = dst_hdr;
 
-        // start the forwarding
+        // start forwarding
 
         // setting the fib_params
         fib_params.family = AF_INET;
+        fib_params.tos = iph->tos;
+        fib_params.tot_len = bpf_ntohs(iph->tot_len);
         fib_params.ipv4_dst = iph->daddr;
+        fib_params.ipv4_src = iph->saddr;
         fib_params.ifindex = ctx->ingress_ifindex;
+        fib_params.sport = 0;
+        fib_params.dport = 0;
 
     } // ipv6
     else
@@ -356,7 +375,7 @@ int xdp_router_4_func(struct xdp_md *ctx)
     if (h_proto == bpf_htons(ETH_P_IP))
     {
 
-        __builtin_memcpy(&eth_cpy, eth, sizeof(eth_cpy));
+        memcpy(&eth_cpy, eth, sizeof(eth_cpy));
         iph = data + nh_off;
 
         if (iph + 1 > data_end)
@@ -413,7 +432,7 @@ int xdp_router_4_func(struct xdp_md *ctx)
             struct icmp6hdr icmp6;
             struct icmp6hdr *new_icmp6;
 
-            // bpf_trace_printk("[IPV4]: icmp type -> %d", icmp->type);
+            bpf_trace_printk("[IPV4]: icmp type -> %d", icmp->type);
 
             if (write_icmp6(icmp, &icmp6) == -1)
             {
@@ -517,5 +536,6 @@ int xdp_router_4_func(struct xdp_md *ctx)
 
 int xdp_pass_func(struct xdp_md *ctx)
 {
+    bpf_trace_printk("pass");
     return XDP_PASS;
 }

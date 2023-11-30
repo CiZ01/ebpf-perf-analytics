@@ -8,7 +8,7 @@ from ctypes import *
 import socket
 import binascii
 
-HDR_FILE = "nat64/nat_helpers.h"
+HDR_FILE = "__nat64/nat_helpers.h"
 
 
 def ip_to_cint(ip_address) -> int:
@@ -59,9 +59,9 @@ except Exception as e:
     printx(e, "err")
     exit(1)
 
-b = BPF(src_file="nat64.bpf.c", hdr_file=HDR_FILE, cflags=["-w"])
+b = BPF(src_file="nat64.bpf.c", cflags=["-w"])
 
-in_fn = b.load_func("xdp_router_func", BPF.XDP)
+in_fn = b.load_func("xdp_6to4_func", BPF.XDP)
 
 router_ip4 = b["router_ip4"]
 
@@ -70,9 +70,7 @@ for i in range(len(interfaces)):
     in_idx = in_idxs[i]
 
     b.attach_xdp(interface, in_fn, 0)
-    router_ip4[c_uint32(in_idx)] = c_uint32(ip_to_cint(
-        ip_address["veth_4"] + f"{i+1}"
-    ))
+    router_ip4[c_uint32(in_idx)] = c_uint32(ip_to_cint(ip_address["veth_4"] + f"{i+1}"))
     printx(f"Attached XDP program to {interface}", "info")
 print()
 
