@@ -9,6 +9,9 @@
 #define TRANSLATE_PREFIX 0x0064FF9B // 64:ff9b::/96
 #define IPV4_PREFIX 0xc0a80900      // 192.168.9.0
 
+#define MAX_UDP_SIZE 1480
+#define MAX_ICMP_SIZE 1480
+
 #ifndef memcpy
 #define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
 #endif
@@ -53,14 +56,10 @@ static __always_inline void set_4f6(struct iphdr *iph, struct ipv6hdr *ip6h, __u
 static __always_inline int write_icmp(struct icmphdr *icmp, struct icmp6hdr *icmp6)
 {
     __u32 mtu, ptr;
-    // 	/* These translations are defined in RFC6145 section 5.2 */
-    // bpf_trace_printk("inside write icmp with type: %d ,request is %d", icmp6->icmp6_type, ICMPV6_ECHO_REQUEST);
     switch (icmp6->icmp6_type)
     {
     case ICMPV6_ECHO_REQUEST:
         icmp->type = ICMP_ECHO;
-        // icmp->type = 0;
-        // bpf_trace_printk("changed type from %d to %d",icmp6->icmp6_type,icmp->type);
         break;
     case ICMPV6_ECHO_REPLY:
         icmp->type = ICMP_ECHOREPLY;
@@ -107,9 +106,6 @@ static __always_inline int write_icmp(struct icmphdr *icmp, struct icmp6hdr *icm
             icmp->type = ICMP_DEST_UNREACH;
             icmp->code = ICMP_PROT_UNREACH;
             ptr = bpf_ntohl(icmp6->icmp6_pointer);
-            /* Figure 6 in RFC6145 - using if statements b/c of
-             * range at the bottom
-             */
             if (ptr == 0 || ptr == 1)
                 icmp->un.reserved[0] = ptr;
             else if (ptr == 4 || ptr == 5)
@@ -242,22 +238,16 @@ static __always_inline int write_icmp6(struct icmphdr *icmp, struct icmp6hdr *ic
 // from 6 to 4
 static inline __u16 csum_fold_helper(__u64 csum)
 {
-    int i;
-#pragma unroll
-    for (i = 0; i < 4; i++)
-    {
-        if (csum >> 16)
-            csum = (csum & 0xffff) + (csum >> 16);
-    }
-    return ~csum;
+    csum = (csum & 0xffff) + (csum >> 16);
+    csum = (csum & 0xffff) + (csum >> 16);
+
+    return (__u16)~csum;
 }
 
 // from 4 to 6
 // there is an errore, return 0
 static __always_inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
 {
-
-    __u16 ret = 0;
     __u32 sum = 0;
     for (int i = 0; i < 40; i++)
     {
@@ -270,9 +260,8 @@ static __always_inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
     }
     sum = (sum >> 16) + (sum & 0xffff);
     sum += (sum >> 16);
-    ret = ~sum;
 
-    return (ret);
+    return ~sum;
 }
 
 static __always_inline int ipv6_addr_equal(struct in6_addr *a, struct in6_addr *b)
@@ -289,4 +278,70 @@ static __always_inline int ip_decrease_ttl(struct iphdr *iph)
     check += bpf_htons(0x0100);
     iph->check = (__u16)(check + (check >= 0xFFFF));
     return --iph->ttl;
+}
+
+
+static inline void update_checksum(__u16 *csum, __u16 old_val, __u16 new_val)
+{
+    __u32 new_csum_value;
+    __u32 new_csum_comp;
+    __u32 undo;
+
+    undo = ~((__u32)*csum) + ~((__u32)old_val);
+    new_csum_value = undo + (undo < ~((__u32)old_val)) + (__u32)new_val;
+    new_csum_comp = new_csum_value + (new_csum_value < ((__u32)new_val));
+    new_csum_comp = (new_csum_comp & 0xFFFF) + (new_csum_comp >> 16);
+    new_csum_comp = (new_csum_comp & 0xFFFF) + (new_csum_comp >> 16);
+    *csum = (__u16)~new_csum_comp;
+}
+
+static __always_inline __wsum icmp_wsum_accumulate(void *data_start, void *data_end, int sample_len)
+{
+    /* Unrolled loop to calculate the checksum of the ICMP sample
+     * Done manually because the compiler refuses with #pragma unroll
+     */
+    __wsum wsum = 0;
+
+#define body(i)                                                                                                        \
+    if ((i) > sample_len)                                                                                              \
+        return wsum;                                                                                                   \
+    if (data_start + (i) + sizeof(__u16) > data_end)                                                                   \
+    {                                                                                                                  \
+        if (data_start + (i) + sizeof(__u8) <= data_end)                                                               \
+            wsum += *(__u8 *)(data_start + (i));                                                                       \
+        return wsum;                                                                                                   \
+    }                                                                                                                  \
+    wsum += *(__u16 *)(data_start + (i));
+
+#define body4(i) body(i) body(i + 2) body(i + 4) body(i + 6)
+
+#define body16(i) body4(i) body4(i + 8) body4(i + 16) body4(i + 24)
+
+#define body128(i) body16(i) body16(i + 32) body16(i + 64) body16(i + 96)
+
+    body128(0) body128(256) body128(512) body128(768) body128(1024)
+
+        return wsum;
+}
+
+static inline __u16 checksum(__u16 *buf, __u32 bufsz)
+{
+    __u32 sum = 0;
+
+    while (bufsz > 1)
+    {
+        sum += *buf;
+        buf++;
+        bufsz -= 2;
+    }
+
+    if (bufsz == 1)
+    {
+        sum += *(__u8 *)buf;
+    }
+
+    sum = (sum & 0xffff) + (sum >> 16);
+    sum = (sum & 0xffff) + (sum >> 16);
+
+    return ~sum;
 }

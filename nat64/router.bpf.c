@@ -5,27 +5,39 @@
 #include <linux/ipv6.h>
 #include <linux/icmpv6.h>
 #include <linux/icmp.h>
+#include <linux/udp.h>
 
 #include "nat64/nat_helpers.h"
 
 #define IP_BOUNDARY_START 0xc0a80901 // 192.168.9.1
 #define IP_BOUNDARY_END 0xc0a809fe   // 192.168.9.254
 
-/* static __always_inline __u16 csum_fold_helper(__u32 csum)
-{
-    csum = (csum >> 16) + (csum & 0xFFFF);
-    csum += (csum >> 16);
-    return (__u16)~csum;
-}
-
-static __always_inline void ipv4_csum(void *data_start, int data_size, __u32 *csum)
-{
-    *csum = bpf_csum_diff((__be32 *)data_start, 0, (__be32 *)data_start, data_size, 0);
-    *csum = csum_fold_helper(*csum);
-} */
-
 // nattinh table
 BPF_HASH(natting_table, u32, struct in6_addr, 256);
+
+static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
+{
+
+    __u32 csum_buffer = 0;
+    __u16 volatile *buf = (void *)icmph;
+
+    for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
+    {
+        if (buf + 1 > data_end)
+            break;
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)buf + 1 <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
 
 /*
     reset the ip passed as parameter in the natting_table
@@ -124,9 +136,6 @@ int xdp_router_func(struct xdp_md *ctx)
     struct ethhdr *eth = data;
     struct iphdr *iph = {0};
 
-    // ip protocol just for debugging
-    __u8 ip_protocol = 0;
-
     __u64 nh_off = sizeof(*eth);
 
     if (data + nh_off > data_end)
@@ -137,7 +146,7 @@ int xdp_router_func(struct xdp_md *ctx)
 
         memcpy(&eth_cpy, eth, sizeof(eth_cpy));
 
-        struct ipv6hdr *ip6h = data + nh_off;
+        struct ipv6hdr *ip6h = data + sizeof(struct ethhdr);
         if (ip6h + 1 > data_end)
             return XDP_DROP;
 
@@ -191,21 +200,6 @@ int xdp_router_func(struct xdp_md *ctx)
             bpf_trace_printk("no free ipv4");
             return XDP_DROP;
         }
-
-        /*         if (ip6h->nexthdr == 0x3b)
-                {
-                    bpf_trace_printk("no next header");
-                }
-                else if (ip6h->nexthdr == 0x3a)
-                {
-                    bpf_trace_printk("icmp6 header");
-                }
-                else
-                {
-                    bpf_trace_printk("errore strano");
-                    return XDP_DROP;
-                } */
-
         // set the ipv4 header
         // set_4f6(&dst_hdr, ip6h, assigned_ipv4);
 
@@ -217,52 +211,78 @@ int xdp_router_func(struct xdp_md *ctx)
         dst_hdr.tos = ip6h->priority << 4 | (ip6h->flow_lbl[0] >> 4);
         dst_hdr.tot_len = bpf_htons(bpf_ntohs(ip6h->payload_len) + sizeof(dst_hdr));
 
-        // check if the packet is a icmpv6
+        // check if the packet is an icmpv6
         if (dst_hdr.protocol == IPPROTO_ICMPV6)
         {
             struct icmp6hdr *icmp6h = (void *)ip6h + sizeof(*ip6h);
             if (icmp6h + 1 > data_end)
                 return XDP_DROP;
 
-            bpf_trace_printk("[IPV6]: icmp type -> %d", icmp6h->icmp6_type);
+            bpf_trace_printk("[icmp6 - check]: %x", bpf_ntohs(icmp6h->icmp6_cksum));
 
-            // ready to parse the icmpv6 header in icmp
+            // ready to parse the icmpv6 header into icmp
             struct icmphdr tmp_icmp;
             struct icmphdr *icmp;
 
             if (write_icmp(&tmp_icmp, icmp6h) == -1)
             {
-                bpf_trace_printk("[ERR]: error during icpmv6 parse in icmp");
+                bpf_trace_printk("[ERR]: error during icmpv6 parse into icmp");
                 return XDP_DROP;
             }
 
             if (bpf_xdp_adjust_head(ctx, (int)sizeof(*icmp6h) - (int)sizeof(tmp_icmp)))
                 return XDP_DROP;
 
-            // after the adjust head I have to reassign the pointers
+            // after the adjust head, reassign the pointers
             data = (void *)(long)ctx->data;
             data_end = (void *)(long)ctx->data_end;
 
             icmp = (void *)(data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr));
-            if (icmp + 1 > data_end)
+            if (icmp + 1 > data_end) // check if the packet is a icmpv6
                 return XDP_DROP;
 
-            // bpf_trace_printk("inside write icmp with type: %d ,request is %d", icmp->type, ICMPV6_ECHO_REQUEST);
             *icmp = tmp_icmp;
-            __u32 csum = 0;
+
             // set the checksum
             icmp->checksum = 0;
-            csum = bpf_csum_diff((__be32 *)icmp, 0, (__be32 *)icmp, sizeof(*icmp), 0);
-            icmp->checksum = csum;
+            __u16 new_cksum = icmp_cksum(icmp, (void *)data_end);
+
+            /*
+            after the checksum is calculated, the verifier complains about a possible
+            out-of-bounds access to the data_end pointer.
+            We need to reassign data_end and data.
+            */
+            void *data_end = (void *)(long)ctx->data_end;
+            void *data = (void *)(long)ctx->data;
+
+            icmp = data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
+            if (icmp + 1 > data_end)
+                return XDP_PASS;
+            icmp->checksum = new_cksum;
+
             dst_hdr.protocol = IPPROTO_ICMP;
-
-            // DEBUG
-            ip_protocol = dst_hdr.protocol;
-
         } // icmpv6
 
+        // udp
+        /* if (dst_hdr.protocol == IPPROTO_UDP)
+        {
+            struct udphdr *udph = (void *)ip6h + sizeof(*ip6h);
+            if (udph + 1 > data_end)
+                return XDP_DROP;
+
+            udph->check = 0x0000;
+            __u16 csum = udp_checksum(&dst_hdr, udph, data_end);
+            if (csum == 0)
+            {
+                bpf_trace_printk("udp checksum error");
+                return XDP_DROP;
+            }
+            udph->check = csum;
+            dst_hdr.protocol = IPPROTO_UDP;
+        } */
         // this work
-        dst_hdr.check = csum_fold_helper(bpf_csum_diff((__be32 *)&dst_hdr, 0, (__be32 *)&dst_hdr, sizeof(dst_hdr), 0));
+        dst_hdr.check =
+            csum_fold_helper(bpf_csum_diff((__be32 *)&dst_hdr, 0, (__be32 *)&dst_hdr, sizeof(struct iphdr), 0));
 
         if (bpf_xdp_adjust_head(ctx, (int)sizeof(struct ipv6hdr) - (int)sizeof(struct iphdr)))
             return XDP_DROP;
@@ -288,7 +308,6 @@ int xdp_router_func(struct xdp_md *ctx)
         }
 
         *iph = dst_hdr;
-
         // start forwarding
 
         // setting the fib_params
@@ -317,7 +336,6 @@ int xdp_router_func(struct xdp_md *ctx)
         memcpy(eth->h_source, fib_params.smac, ETH_ALEN);
 
         // DEBUG
-        // bpf_trace_printk("PROTOCOL: %u", ip_protocol);
         // bpf_trace_printk("after dmac: %x:%x:%x", eth->h_dest[3], eth->h_dest[4], eth->h_dest[5]);
         // bpf_trace_printk("after smac: %x:%x:%x", eth->h_source[3], eth->h_source[4], eth->h_source[5]);
         // bpf_trace_printk("SRC: %pI4 DST: %pI4", &iph->saddr, &iph->daddr);
@@ -536,6 +554,22 @@ int xdp_router_4_func(struct xdp_md *ctx)
 
 int xdp_pass_func(struct xdp_md *ctx)
 {
-    bpf_trace_printk("pass");
+    void *data_end = (void *)(long)ctx->data_end;
+    void *data = (void *)(long)ctx->data;
+
+    struct ethhdr *eth = data;
+    struct iphdr *iph;
+    struct tcphdr *tcph;
+
+    __u64 nh_off = sizeof(*eth);
+    if (data + nh_off > data_end)
+        return XDP_DROP;
+
+    if (eth->h_proto == bpf_htons(ETH_P_IP))
+    {
+        iph = data + nh_off;
+        if (iph + 1 > data_end)
+            return XDP_DROP;
+    }
     return XDP_PASS;
 }
