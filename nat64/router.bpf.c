@@ -15,30 +15,6 @@
 // nattinh table
 BPF_HASH(natting_table, u32, struct in6_addr, 256);
 
-static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
-{
-
-    __u32 csum_buffer = 0;
-    __u16 volatile *buf = (void *)icmph;
-
-    for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
-    {
-        if (buf + 1 > data_end)
-            break;
-        csum_buffer += *buf;
-        buf++;
-    }
-
-    if ((void *)buf + 1 <= data_end)
-    {
-        // In case payload is not 2 bytes aligned
-        csum_buffer += *(__u8 *)buf;
-    }
-
-    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
-    return ~csum;
-}
-
 /*
     reset the ip passed as parameter in the natting_table
 */
@@ -280,6 +256,7 @@ int xdp_router_func(struct xdp_md *ctx)
             udph->check = csum;
             dst_hdr.protocol = IPPROTO_UDP;
         } */
+
         // this work
         dst_hdr.check =
             csum_fold_helper(bpf_csum_diff((__be32 *)&dst_hdr, 0, (__be32 *)&dst_hdr, sizeof(struct iphdr), 0));
@@ -415,15 +392,10 @@ int xdp_router_4_func(struct xdp_md *ctx)
             return XDP_PASS;
         }
 
-        // bpf_trace_printk("src address of received packet %pI4", &iph->saddr);
         iphdr_len = iph->ihl * 4;
 
         if (iphdr_len != sizeof(struct iphdr) || (iph->frag_off & ~bpf_htons(1 << 14)))
-        {
-            /*  bpf_trace_printk("v4: pkt src/dst %pI4/ %pI4 has IP options or is fragmented, dropping\n", &iph->daddr,
-                        &iph->saddr); */
             return XDP_DROP;
-        }
 
         // find the ipv6 address associated to the ipv4 dest address
         int res = search_ipv6_from_ipv4(bpf_htonl(iph->daddr), &dst_hdr.daddr);
@@ -442,15 +414,15 @@ int xdp_router_4_func(struct xdp_md *ctx)
         dst_hdr.priority = (iph->tos & 0x70) >> 4;
         dst_hdr.flow_lbl[0] = iph->tos << 4;
         dst_hdr.payload_len = bpf_htons(bpf_ntohs(iph->tot_len) - iphdr_len);
+
         if (dst_hdr.nexthdr == IPPROTO_ICMP)
         {
             struct icmphdr *icmp = (void *)iph + sizeof(*iph);
             if (icmp + 1 > data_end)
                 return XDP_DROP;
+
             struct icmp6hdr icmp6;
             struct icmp6hdr *new_icmp6;
-
-            bpf_trace_printk("[IPV4]: icmp type -> %d", icmp->type);
 
             if (write_icmp6(icmp, &icmp6) == -1)
             {
@@ -460,13 +432,14 @@ int xdp_router_4_func(struct xdp_md *ctx)
 
             if (bpf_xdp_adjust_head(ctx, (int)sizeof(*icmp) - (int)sizeof(icmp6)))
                 return XDP_DROP;
+
             data = (void *)(long)ctx->data;
             data_end = (void *)(long)ctx->data_end;
+
             new_icmp6 = (void *)(data + sizeof(struct ethhdr) + sizeof(struct iphdr));
 
             if (new_icmp6 + 1 > data_end)
             {
-                bpf_trace_printk("new icmp");
                 return XDP_DROP;
             }
 
@@ -474,12 +447,27 @@ int xdp_router_4_func(struct xdp_md *ctx)
 
             struct icmpv6_pseudo ph = {
                 .nh = IPPROTO_ICMPV6, .saddr = dst_hdr.saddr, .daddr = dst_hdr.daddr, .len = dst_hdr.payload_len};
-            // new_icmp6->icmp6_cksum = calculate_icmp_checksum((__u16 *)new_icmp6, (__u16 *)&ph);
 
-            new_icmp6->icmp6_cksum = 0x0000;
-            new_icmp6->icmp6_cksum =
-                csum_fold_helper(bpf_csum_diff((__be32 *)new_icmp6, 0, (__be32 *)new_icmp6, sizeof(new_icmp6), 0));
-            bpf_trace_printk("checksum in icmp %x", bpf_htonl(new_icmp6->icmp6_cksum));
+            new_icmp6->icmp6_cksum = 0;
+            //__u16 new_cksum = calculate_icmp_checksum((__u16 *)new_icmp6, (__u16 *)&ph);
+            __u16 new_cksum = icmpv6_cksum(&ph, new_icmp6, data_end);
+            //__u16 new_cksum = csum_fold_helper(bpf_csum_diff((__be32 *)new_icmp6, 0, (__be32 *)new_icmp6,
+            //sizeof(*new_icmp6), 0));
+            bpf_trace_printk("checksum icmp %x", bpf_ntohs(new_cksum));
+
+            /*
+                after the checksum is calculated, the verifier complains about a possible
+                out-of-bounds access to the data_end pointer.
+                We need to reassign data_end and data.
+            */
+            void *data_end = (void *)(long)ctx->data_end;
+            void *data = (void *)(long)ctx->data;
+
+            new_icmp6 = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
+            if (new_icmp6 + 1 > data_end)
+                return XDP_PASS;
+
+            new_icmp6->icmp6_cksum = new_cksum;
             dst_hdr.nexthdr = IPPROTO_ICMPV6;
         }
 

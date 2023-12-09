@@ -235,18 +235,86 @@ static __always_inline int write_icmp6(struct icmphdr *icmp, struct icmp6hdr *ic
     return 0;
 }
 
-// from 6 to 4
-static inline __u16 csum_fold_helper(__u64 csum)
+static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
+{
+    __u32 csum_buffer = 0;
+    __u16 volatile *buf = (void *)icmph;
+
+    for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
+    {
+        if (buf + 1 > data_end)
+            break;
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)buf + 1 <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
+
+static __always_inline __u32 sum16(__u16 *addr, __u8 len)
+{
+    __u32 sum = 0;
+
+    for (int i = 0; i < len; i++)
+        sum += *addr++;
+
+    return sum;
+}
+
+static inline __u16 icmpv6_cksum(struct ipv6hdr *ip6h, struct icmp6hdr *icmp6h, void *data_end)
+{
+    __u32 csum_buffer = 0;
+    __u16 volatile *buf = (void *)icmp6h;
+
+    // Compute checksum on ipv6 header, the icmp6 checksum include a ipv6 pseudo header
+    csum_buffer += sum16((__u16 *)&ip6h->saddr, sizeof(ip6h->saddr) >> 1);
+    csum_buffer += sum16((__u16 *)&ip6h->daddr, sizeof(ip6h->daddr) >> 1);
+    csum_buffer += bpf_htons((__u16)ip6h->nexthdr);
+    csum_buffer += ip6h->payload_len;
+
+    // not needed, it seems that broke the checksum
+    // it is already included in the icmp6 header
+    // csum_buffer += icmp6h->icmp6_type;
+
+    // Compute checksum on udp header + payload
+    for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
+    {
+        if ((void *)(buf + 1) > data_end)
+        {
+            break;
+        }
+
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)(buf + 1) <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
+
+static inline __u16 csum_fold_helper(__u32 csum)
 {
     csum = (csum & 0xffff) + (csum >> 16);
-    csum = (csum & 0xffff) + (csum >> 16);
-
+    csum += csum >> 16;
     return (__u16)~csum;
 }
 
 // from 4 to 6
 // there is an errore, return 0
-static __always_inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
+static inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
 {
     __u32 sum = 0;
     for (int i = 0; i < 40; i++)
@@ -254,14 +322,16 @@ static __always_inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
         sum += *ph++;
     }
 
+    bpf_trace_printk("sum: %x", sum);
+
     for (int i = 0; i < 4; i++)
     {
         sum += *icmph++;
     }
-    sum = (sum >> 16) + (sum & 0xffff);
-    sum += (sum >> 16);
+    bpf_trace_printk("2. sum: %x", sum);
 
-    return ~sum;
+    __u16 csum = (__u16)sum + (__u16)(sum >> 16);
+    return ~csum;
 }
 
 static __always_inline int ipv6_addr_equal(struct in6_addr *a, struct in6_addr *b)
@@ -279,7 +349,6 @@ static __always_inline int ip_decrease_ttl(struct iphdr *iph)
     iph->check = (__u16)(check + (check >= 0xFFFF));
     return --iph->ttl;
 }
-
 
 static inline void update_checksum(__u16 *csum, __u16 old_val, __u16 new_val)
 {
