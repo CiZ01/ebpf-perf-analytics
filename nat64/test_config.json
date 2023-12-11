@@ -1,0 +1,113 @@
+[
+    {
+        "namespace": "IPv6-1",
+        "pretty_prompt": "\\[\\033[1;31m\\](IPv6-1)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth-6-1",
+                "veth_peer": [
+                    "veth-r-1"
+                ],
+                "ipv6": "2001:db8::1/64",
+                "ipv6_gateway": "2000:db8::1"
+            }
+        ]
+    },
+    {
+        "namespace": "IPv6-2",
+        "pretty_prompt": "\\[\\033[1;32m\\](IPv6-2)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth-6-2",
+                "veth_peer": [
+                    "veth-r-2"
+                ],
+                "ipv6": "2002:db8::1/64",
+                "ipv6_gateway": "2000:db8::2"
+            }
+        ]
+    },
+    {
+        "namespace": "IPv6-3",
+        "pretty_prompt": "\\[\\033[1;39\\](IPv6-3)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth-6-3",
+                "veth_peer": [
+                    "veth-r-3"
+                ],
+                "ipv6": "2003:db8::1/64",
+                "ipv6_gateway": "2000:db8::3"
+            }
+        ]
+    },
+    {
+        "namespace": "IPv4-1",
+        "pretty_prompt": "\\[\\033[1;34m\\](IPv4-1)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth-4-1",
+                "veth_peer": [
+                    "veth-r-4"
+                ],
+                "ipv4": "192.168.2.1/24",
+                "ipv4_gateway": "192.168.1.1"
+            }
+        ]
+    },
+    {
+        "namespace": "IPv4-2",
+        "pretty_prompt": "\\[\\033[1;35m\\](IPv4-2)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth-4-2",
+                "veth_peer": [
+                    "veth-r-5"
+                ],
+                "ipv4": "192.168.3.1/24",
+                "ipv4_gateway": "192.168.1.2"
+            }
+        ]
+    },
+    {
+        "namespace": "router",
+        "pretty_prompt": "\\[\\033[1;36m\\](router)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth-r-1",
+                "ipv6": "2000:db8::1/64",
+                "ipv6_route": [
+                    "2001:db8::/64"
+                ]
+            },
+            {
+                "veth_name": "veth-r-2",
+                "ipv6": "2000:db8::2/64",
+                "ipv6_route": [
+                    "2002:db8::/64"
+                ]
+            },
+            {
+                "veth_name": "veth-r-3",
+                "ipv6": "2000:db8::3/64",
+                "ipv6_route": [
+                    "2003:db8::/64"
+                ]
+            },
+            {
+                "veth_name": "veth-r-4",
+                "ipv4": "192.168.1.1/24",
+                "ipv4_route": [
+                    "192.168.2.0/24"
+                ]
+            },
+            {
+                "veth_name": "veth-r-5",
+                "ipv4": "192.168.1.2/24",
+                "ipv4_route": [
+                    "192.168.3.0/24"
+                ]
+            }
+        ]
+    }
+]
