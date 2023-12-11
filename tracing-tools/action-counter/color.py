@@ -1,3 +1,7 @@
+import importlib
+
+importlib.import_module("color")
+
 BLACK = "\033[0;30m"
 DARK_GRAY = "\033[1;30m"
 RED = "\033[0;31m"

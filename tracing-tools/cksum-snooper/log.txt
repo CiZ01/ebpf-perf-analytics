@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/cizzo/Scrivania/eBPF/trace-tools/cksum-snooper/cksum-snpr.py", line 37, in <module>
+    b = BPF(src_file="cksum-snpr.c", hdr_file=HDR_FILE, cflags=["-w"])
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/site-packages/bcc/__init__.py", line 474, in __init__
+    self.module = lib.bpf_module_create_c_from_string(text,
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt

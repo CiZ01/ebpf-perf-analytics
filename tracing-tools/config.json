@@ -1,0 +1,41 @@
+[
+    {
+        "namespace": "shiro",
+        "pretty_prompt": "\\[\\033[1;31m\\](shiro)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth0",
+                "veth_peer": [
+                    "veth2"
+                ],
+                "ipv4": "192.168.1.1/24",
+                "ipv4_route": [
+                    "192.168.2.0/24"
+                ],
+		"ipv6": "2000:db8::1",
+		"ipv6_route": [
+			"2001:db8::1"
+		]
+            },
+	    {
+	    	"veth_name": "veth1",
+		"ipv4": "192.168.1.2/24"
+	    }
+        ]
+    },
+    {
+        "namespace": "kuro",
+        "pretty_prompt": "\\[\\033[1;34m\\](kuro)\\[\\033[0m\\] \\u@\\W > ",
+        "veths": [
+            {
+                "veth_name": "veth2",
+                "ipv4": "192.168.2.1/24",
+                "ipv4_route": [
+                    "192.168.1.0/24"
+                ],
+		"ipv6": "2001:db8::1",
+		"ipv6_route": ["2000:db8::1"]
+            }
+        ]
+    }
+]
