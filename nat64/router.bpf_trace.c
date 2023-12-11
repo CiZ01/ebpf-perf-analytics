@@ -9,6 +9,42 @@
 
 #include "nat64/nat_helpers.h"
 
+#define TRACE 1
+
+#ifdef TRACE
+union addr_t {
+    __u32 ipv4;
+    __u32 ipv6[4];
+};
+
+struct data_t
+{
+    union addr_t real_src;
+    union addr_t src;
+    union addr_t dst;
+    __u8 protocol;
+    __u8 action;
+    __u16 rc;
+    __u64 timestamp;
+};
+BPF_PERF_OUTPUT(logs);
+
+#define TRACE_LOG(...)                                                                                                 \
+    {                                                                                                                  \
+        struct data_t perf_data = {0};                                                                                 \
+        memcpy(&perf_data.real_src, &real_src, sizeof(real_src));                                                      \
+        memcpy(&perf_data.src, &src, sizeof(src));                                                                     \
+        memcpy(&perf_data.dst, &dst, sizeof(dst));                                                                     \
+        perf_data.protocol = protocol;                                                                                 \
+        perf_data.action = action;                                                                                     \
+        perf_data.rc = rc;                                                                                                 \
+        perf_data.timestamp = bpf_ktime_get_ns();                                                                      \
+    }
+
+#else
+#define TRACE_LOG(...)
+#endif
+
 #define IP_BOUNDARY_START 0xc0a80901 // 192.168.9.1
 #define IP_BOUNDARY_END 0xc0a809fe   // 192.168.9.254
 
@@ -53,6 +89,7 @@ static inline int find_free_ip(__u32 ip, struct in6_addr *ipv6_addr)
         if (*value == NULL)
         {
             natting_table.update(&ip, ipv6_addr);
+            bpf_trace_printk("free ip: %pI6", ipv6_addr);
             return 0;
         }
     }
@@ -119,6 +156,14 @@ int xdp_router_func(struct xdp_md *ctx)
     if (data + nh_off > data_end)
         return XDP_DROP;
 
+#ifdef TRACE
+    struct data_t perf_data = {0};
+    union addr_t real_src;
+    union addr_t src;
+    union addr_t dst;
+    __u8 protocol;
+#endif
+
     if (eth->h_proto == bpf_htons(ETH_P_IPV6))
     {
 
@@ -135,6 +180,13 @@ int xdp_router_func(struct xdp_md *ctx)
             *(struct in6_addr *)fib_params.ipv6_dst = ip6h->daddr;
             fib_params.ifindex = ctx->ingress_ifindex;
 
+#ifdef TRACE
+            memcpy(&real_src, &ip6h->saddr, sizeof(ip6h->saddr));
+            memcpy(&src, &ip6h->saddr, sizeof(ip6h->saddr));
+            memcpy(&dst, &ip6h->daddr, sizeof(ip6h->daddr));
+            protocol = ip6h->nexthdr;
+            action = 1;
+#endif
             goto forward;
         }
 
@@ -168,7 +220,6 @@ int xdp_router_func(struct xdp_md *ctx)
                 if (res == 0)
                 {
                     assigned_ipv4 = ip;
-                    bpf_trace_printk("[IPV6]: IPV4 ASSIGNED: %pI4", &assigned_ipv4);
                     break;
                 }
             }
@@ -184,10 +235,19 @@ int xdp_router_func(struct xdp_md *ctx)
         // set the ipv4 header
         dst_hdr.saddr = bpf_htonl((__be32)assigned_ipv4);
         dst_hdr.daddr = ip6h->daddr.s6_addr32[3];
+        bpf_trace_printk("assigned ipv4: %pI4", &dst_hdr.saddr);
         dst_hdr.protocol = ip6h->nexthdr;
         dst_hdr.ttl = ip6h->hop_limit;
         dst_hdr.tos = ip6h->priority << 4 | (ip6h->flow_lbl[0] >> 4);
         dst_hdr.tot_len = bpf_htons(bpf_ntohs(ip6h->payload_len) + sizeof(dst_hdr));
+
+// TRACE LOG
+#ifdef TRACE
+        memcpy(&real_src, &ip6h->saddr, sizeof(ip6h->saddr));
+        memcpy(&src, &assigned_ipv4, sizeof(assigned_ipv4));
+        memcpy(&dst, &dst_hdr.daddr, sizeof(dst_hdr.daddr));
+        protocol = ip6h->nexthdr;
+#endif
 
         // check if the packet is an icmpv6
         if (dst_hdr.protocol == IPPROTO_ICMPV6)
@@ -214,7 +274,7 @@ int xdp_router_func(struct xdp_md *ctx)
             data_end = (void *)(long)ctx->data_end;
 
             icmp = (void *)(data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr));
-            if (icmp + 1 > data_end)
+            if (icmp + 1 > data_end) // check if the packet is a icmpv6
                 return XDP_DROP;
 
             *icmp = tmp_icmp;
@@ -222,7 +282,6 @@ int xdp_router_func(struct xdp_md *ctx)
             // set the checksum
             icmp->checksum = 0;
             __u16 new_cksum = icmp_cksum(icmp, (void *)data_end);
-            // bpf_trace_printk("[IPV6]: checksum: %x", bpf_htons(new_cksum));
 
             /*
             after the checksum is calculated, the verifier complains about a possible
@@ -240,33 +299,10 @@ int xdp_router_func(struct xdp_md *ctx)
             dst_hdr.protocol = IPPROTO_ICMP;
         } // icmpv6
 
-        if (dst_hdr.protocol == IPPROTO_UDP)
-        {
-            struct udphdr *udph = data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
-            if (udph + 1 > data_end)
-                return XDP_PASS;
-
-            udph->check = 0;
-            __u16 new_cksum = udp_cksum(&dst_hdr, udph, data_end);
-            udph->check = new_cksum;
-        } // udp
-
-        if (dst_hdr.protocol == IPPROTO_TCP)
-        {
-            struct tcphdr *tcph = data + sizeof(struct ethhdr) + sizeof(struct ipv6hdr);
-            if (tcph + 1 > data_end)
-                return XDP_PASS;
-
-            tcph->check = 0;
-            __u16 new_cksum = tcp_cksum(&dst_hdr, tcph, data_end);
-            tcph->check = new_cksum;
-        } // tcps
-
         // this work
         dst_hdr.check =
             csum_fold_helper(bpf_csum_diff((__be32 *)&dst_hdr, 0, (__be32 *)&dst_hdr, sizeof(struct iphdr), 0));
 
-        // bpf_trace_printk("ipv4 checksum diff: %u", dst_hdr.check);
         if (bpf_xdp_adjust_head(ctx, (int)sizeof(struct ipv6hdr) - (int)sizeof(struct iphdr)))
             return XDP_DROP;
 
@@ -286,6 +322,7 @@ int xdp_router_func(struct xdp_md *ctx)
 
         if (iph + 1 > data_end)
         {
+            bpf_trace_printk("iph out of boundary");
             return XDP_DROP;
         }
 
@@ -318,20 +355,30 @@ forward:
         memcpy(eth->h_source, fib_params.smac, ETH_ALEN);
 
         action = bpf_redirect(fib_params.ifindex, 0);
-        bpf_trace_printk("[IPV6]: ACTION: %d", action);
+
+#ifdef TRACE
+        // TRACE LOG
+        TRACE_LOG();
+        logs.perf_submit(ctx, &perf_data, sizeof(perf_data));
+#endif
         return action;
     case BPF_FIB_LKUP_RET_BLACKHOLE:   /* dest is blackholed; can be dropped */
     case BPF_FIB_LKUP_RET_UNREACHABLE: /* dest is unreachable; can be dropped */
     case BPF_FIB_LKUP_RET_PROHIBIT:    /* dest not allowed; can be dropped */
 
+        // TRACE LOG
+        TRACE_LOG();
         return XDP_PASS;
     case BPF_FIB_LKUP_RET_NOT_FWDED: /* packet is not forwarded */
-        // bpf_trace_printk("route not found, check if routing suite is working properly");
+        bpf_trace_printk("route not found, check if routing suite is working properly");
     case BPF_FIB_LKUP_RET_FWD_DISABLED: /* fwding is not enabled on ingress */
     case BPF_FIB_LKUP_RET_UNSUPP_LWT:   /* fwd requires encapsulation */
     case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
-        // bpf_trace_printk("neigh entry missing");
+        bpf_trace_printk("neigh entry missing");
     case BPF_FIB_LKUP_RET_FRAG_NEEDED: /* fragmentation required to fwd */
+
+        // TRACE LOG
+        TRACE_LOG();
         return XDP_PASS;
     }
 
@@ -340,9 +387,11 @@ forward:
 
 int xdp_router_4_func(struct xdp_md *ctx)
 {
+    // bpf_trace_printk("ciaone!!!");
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
 
+    struct ethhdr *eth = data;
     struct iphdr *iph;
     struct ipv6hdr *ip6h;
     int iphdr_len;
@@ -356,17 +405,27 @@ int xdp_router_4_func(struct xdp_md *ctx)
 
     __u8 action;
 
-    struct ethhdr *eth = data;
-    if (eth + 1 > data_end)
+    nh_off = sizeof(*eth);
+    if (data + nh_off > data_end)
     {
         return XDP_DROP;
     }
 
-    if (eth->h_proto == bpf_htons(ETH_P_IP))
+    h_proto = eth->h_proto;
+
+#ifdef TRACE
+    struct data_t perf_data = {0};
+    union addr_t real_src;
+    union addr_t src;
+    union addr_t dst;
+    __u8 protocol;
+#endif
+
+    if (h_proto == bpf_htons(ETH_P_IP))
     {
 
         memcpy(&eth_cpy, eth, sizeof(eth_cpy));
-        iph = data + sizeof(struct ethhdr);
+        iph = data + nh_off;
 
         if (iph + 1 > data_end)
         {
@@ -389,6 +448,14 @@ int xdp_router_4_func(struct xdp_md *ctx)
             fib_params.sport = 0;
             fib_params.dport = 0;
 
+#ifdef TRACE
+            memcpy(&real_src, &iph->saddr, sizeof(iph->saddr));
+            memcpy(&src, &iph->saddr, sizeof(iph->saddr));
+            memcpy(&dst, &iph->daddr, sizeof(iph->daddr));
+            __u8 protocol = iph->protocol;
+            __u8 action = 1;
+#endif
+
             goto forward;
         }
 
@@ -401,7 +468,7 @@ int xdp_router_4_func(struct xdp_md *ctx)
         int res = search_ipv6_from_ipv4(bpf_htonl(iph->daddr), &dst_hdr.daddr);
         if (res == -1)
         {
-            bpf_trace_printk("[ERR]: IPV6 address not found, packet droped!");
+            bpf_trace_printk("ipv6 address not found");
             return XDP_DROP;
         }
 
@@ -409,13 +476,19 @@ int xdp_router_4_func(struct xdp_md *ctx)
         dst_hdr.saddr.in6_u.u6_addr32[0] = bpf_htonl(TRANSLATE_PREFIX);
         dst_hdr.saddr.in6_u.u6_addr32[3] = iph->saddr;
 
-        bpf_trace_printk("[IPV4]: IPV6 ASSIGNED: %pI6", &dst_hdr.saddr.s6_addr32);
-
         dst_hdr.nexthdr = iph->protocol;
         dst_hdr.hop_limit = iph->ttl;
         dst_hdr.priority = (iph->tos & 0x70) >> 4;
         dst_hdr.flow_lbl[0] = iph->tos << 4;
         dst_hdr.payload_len = bpf_htons(bpf_ntohs(iph->tot_len) - iphdr_len);
+
+        // TRACE LOG
+#ifdef TRACE
+        memcpy(&real_src, &iph->saddr, sizeof(iph->saddr));
+        memcpy(&src, &dst_hdr.saddr, sizeof(dst_hdr.saddr));
+        memcpy(&dst, &dst_hdr.daddr, sizeof(dst_hdr.daddr));
+        __u8 protocol = iph->protocol;
+#endif
 
         if (dst_hdr.nexthdr == IPPROTO_ICMP)
         {
@@ -428,7 +501,7 @@ int xdp_router_4_func(struct xdp_md *ctx)
 
             if (write_icmp6(icmp, &icmp6) == -1)
             {
-                bpf_trace_printk("[ERR]: cant write icmp");
+                bpf_trace_printk("cant write icmp");
                 return XDP_DROP;
             }
 
@@ -475,29 +548,10 @@ int xdp_router_4_func(struct xdp_md *ctx)
             dst_hdr.nexthdr = IPPROTO_ICMPV6;
         } // icmp
 
-        if (dst_hdr.nexthdr == IPPROTO_UDP)
-        {
-            struct udphdr *udp6h = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
-            if (udp6h + 1 > data_end)
-                return XDP_PASS;
-
-            udp6h->check = 0;
-
-            // udp checksum is the same, but change the pseudo header
-            __u16 new_cksum = udp6_cksum(&dst_hdr, udp6h, data_end);
-            udp6h->check = new_cksum;
-        } // udp
-
-        if (dst_hdr.nexthdr == IPPROTO_TCP)
-        {
-            struct tcphdr *tcph = data + sizeof(struct ethhdr) + sizeof(struct iphdr);
-            if (tcph + 1 > data_end)
-                return XDP_PASS;
-
-            tcph->check = 0;
-            __u16 new_cksum = tcp6_cksum(&dst_hdr, tcph, data_end);
-            tcph->check = new_cksum;
-        } // tcps
+        /*
+        maybe from ipv4 to ipv6 the udp checksum should be calculated,
+        in ipv6 it is mandatory and an ipv4 host could omit it.
+        */
 
         if (bpf_xdp_adjust_head(ctx, (int)sizeof(struct iphdr) - (int)sizeof(struct ipv6hdr)))
             return XDP_DROP;
@@ -538,19 +592,25 @@ forward:
 
         action = bpf_redirect(fib_params.ifindex, 0);
 
-        bpf_trace_printk("[IPV4]: ACTION: %d", action);
+        // TRACE LOG
+#ifdef TRACE
+        TRACE_LOG();
+        logs.perf_submit(ctx, &perf_data, sizeof(perf_data));
+#endif
         return action;
     case BPF_FIB_LKUP_RET_BLACKHOLE:   /* dest is blackholed; can be dropped */
     case BPF_FIB_LKUP_RET_UNREACHABLE: /* dest is unreachable; can be dropped */
     case BPF_FIB_LKUP_RET_PROHIBIT:    /* dest not allowed; can be dropped */
+        TRACE_LOG();
         return XDP_DROP;
     case BPF_FIB_LKUP_RET_NOT_FWDED: /* packet is not forwarded */
-        // bpf_trace_printk("route not found, check if routing suite is working properly");
+        bpf_trace_printk("route not found, check if routing suite is working properly");
     case BPF_FIB_LKUP_RET_FWD_DISABLED: /* fwding is not enabled on ingress */
     case BPF_FIB_LKUP_RET_UNSUPP_LWT:   /* fwd requires encapsulation */
     case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
-        // bpf_trace_printk("neigh entry missing");
+        bpf_trace_printk("neigh entry missing");
     case BPF_FIB_LKUP_RET_FRAG_NEEDED: /* fragmentation required to fwd */
+        TRACE_LOG();
         return XDP_PASS;
     }
     return XDP_PASS;

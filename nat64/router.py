@@ -1,32 +1,32 @@
 from bcc import BPF
 import sys
 from pyroute2 import IPRoute
-from color import *
+from printer import printx, print_event
 from time import sleep
 from configparser import ConfigParser
 from ctypes import *
 import socket
 import binascii
+from in6_struct import in6_addr
+
+TRACE = 0
 
 HDR_FILE = "nat64/nat_helpers.h"
 IP_BOUNDARY_START = 0xC0A80901  # 192.168.9.1
 IP_BOUNDARY_END = 0xC0A809FE  # 192.168.9.254
+
 PROTO = {
     "1": "ICMP",
     "2": "IGMP",
     "6": "TCP",
     "17": "UDP",
-    "58": "IPv6-ICMP",
+    "58": "ICMPv6",
 }
 
 flags = BPF.XDP_FLAGS_SKB_MODE
 
 
-class in6_addr(Structure):
-    _fields_ = [("in6_u", c_uint8 * 16)]
-
-
-def gen_natting_table(table, start: hex, end: hex):
+def gen_natting_table(table, start: hex, end: hex, csv_filename: str = None):
     """
     generate a series of ip4 address from a boundary in hex
     and assign to them a NULL value in the table
@@ -35,14 +35,26 @@ def gen_natting_table(table, start: hex, end: hex):
     i_start, i_end = int(start), int(end)
     for ip in range(i_start, i_end):
         table[c_uint(ip)] = POINTER(in6_addr)()
+
+    if csv_filename:
+        with open(csv_filename, "r") as f:
+            for line in f.readlines()[1:]:
+                ip4, ip6 = line.split(";")
+                ip4 = ip_to_hex(ip4)
+                ip6 = ip6.strip()  # remove \n
+                table[c_uint(ip4)] = POINTER(in6_addr)(in6_addr().setFromString(ip6))
+
     return
 
 
-def ip_to_cint(ip_address) -> int:
+def ip_to_hex(ip_address) -> int:
+    """
+    convert an ip address in string format to an int
+    in 16 bit hex format
+    """
     ip_binary = socket.inet_aton(ip_address)
 
     ip_hex = binascii.hexlify(ip_binary).decode("utf-8")
-
     return int(ip_hex, 16)
 
 
@@ -54,31 +66,18 @@ def load_cfg(path: str) -> ConfigParser:
 
 
 if len(sys.argv) > 1:
-    if sys.argv[1] == "-c":
+    if "-c" in sys.argv:
         # LOAD CONFIG
-        cfg_path = sys.argv[2]
+        cfg_path = sys.argv[sys.argv.index("-c") + 1]
         cfg = load_cfg(cfg_path)
 
         # interfaces names are comma separated
         interfaces_6to4 = cfg["INTERFACES_6to4"]["interfaces"].split(",")
         interfaces_4to6 = cfg["INTERFACES_4to6"]["interfaces"].split(",")
 
-        # router ip address for each interface
-        ip_address = cfg["IP_ADDRESS"]
-    else:
-        # NOT WORKING
-        interfaces_6to4 = sys.argv[1:].copy()
-        ip_address = {
-            "veth_4": "192.168.1.1",
-            "veth_6": "2000:db8:1::1",
-        }
-else:
-    # NOT WORKING
-    interfaces_6to4 = ["veth0"]
-    ip_address = {
-        "veth_4": "192.168.1.1",
-        "veth_6": "2000:db8:1::1",
-    }
+        csv_filename = cfg["ADDRESSES_FILE"]["filename"]
+    if "-t" in sys.argv:
+        TRACE = 1
 
 # check if the specified interface exists
 ip = IPRoute()
@@ -89,32 +88,29 @@ except Exception as e:
     printx(e, "err")
     exit(1)
 
-b = BPF(src_file="router.bpf.c", hdr_file=HDR_FILE, cflags=["-w"])
-# print(b.disassemble_func("xdp_router_func"))
+b = BPF(src_file="router.bpf.c", hdr_file=HDR_FILE, cflags=["-w", "-DTRACE=1"])
 
 six_four_fn = b.load_func("xdp_router_func", BPF.XDP)
 four_six_fn = b.load_func("xdp_router_4_func", BPF.XDP)
 
 natting_table = b["natting_table"]
-gen_natting_table(natting_table, IP_BOUNDARY_START, IP_BOUNDARY_END)
+gen_natting_table(natting_table, IP_BOUNDARY_START, IP_BOUNDARY_END, csv_filename)
 
-if True:
-    # load 6 to 4 interface
-    for i in range(len(interfaces_6to4)):
-        interface = interfaces_6to4[i]
-        in_idx = in_idxs[i]
+# load 6 to 4 interface
+for i in range(len(interfaces_6to4)):
+    interface = interfaces_6to4[i]
+    in_idx = in_idxs[i]
 
-        b.attach_xdp(interface, six_four_fn, flags)
-        printx(f"Attached XDP program 6to4 to {interface}", "info")
+    b.attach_xdp(interface, six_four_fn, flags)
+    printx(f"Attached XDP program 6to4 to {interface}", "info")
 
-if True:
-    # load 4 to 6 interface
-    for i in range(len(interfaces_4to6)):
-        interface = interfaces_4to6[i]
-        in_idx = in_idxs[i]
+# load 4 to 6 interface
+for i in range(len(interfaces_4to6)):
+    interface = interfaces_4to6[i]
+    in_idx = in_idxs[i]
 
-        b.attach_xdp(interface, four_six_fn, flags)
-        printx(f"Attached XDP program 4to6 to {interface}", "info")
+    b.attach_xdp(interface, four_six_fn, flags)
+    printx(f"Attached XDP program 4to6 to {interface}", "info")
 print()
 
 printx("Running...", "info")
@@ -123,30 +119,13 @@ prev_dest_ip = 0
 prev_src_ip = 0
 pkt_counter = 0
 prev_protocol = 0
-printx("Trace:", "info")
+
+if TRACE:
+    printx("Trace:", "info")
+    b["logs"].open_perf_buffer(print_event)
 while True:
     try:
-        # print trace
-        """(task, pid, cpu, flags, ts, msg) = b.trace_fields()
-        msg = str(msg, encoding="utf-8")
-        if msg.startswith("PROTOCOL"):
-            prev_protocol = msg.split()[1]
-        if msg.startswith("SRC"):
-            ip_src, ip_dst = msg.split()[1], msg.split()[3]
-            if prev_src_ip == ip_src and prev_dest_ip == ip_dst:
-                pkt_counter += 1
-                print(
-                    f"| {ip_src} | {ip_dst} | [ {pkt_counter} ]",
-                    end="\r",
-                )
-            else:
-                prev_dest_ip = ip_dst
-                prev_src_ip = ip_src
-                print(
-                    f"| {ip_src} | {ip_dst} | [ {pkt_counter} ]",
-                    end="\r",
-                )
-                pkt_counter = 0"""
+        b.perf_buffer_poll()
         sleep(1)
         pass
     except ValueError:

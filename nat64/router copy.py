@@ -1,7 +1,7 @@
 from bcc import BPF
 import sys
 from pyroute2 import IPRoute
-from color import *
+from nat64.printer import *
 from time import sleep
 from configparser import ConfigParser
 from ctypes import *

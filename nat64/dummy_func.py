@@ -1,5 +1,5 @@
 from bcc import BPF
-from color import *
+from nat64.printer import *
 import sys
 from pyroute2 import IPRoute
 

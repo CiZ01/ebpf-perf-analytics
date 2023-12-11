@@ -4,6 +4,7 @@
 #include <linux/ip.h>
 #include <linux/icmp.h>
 #include <linux/icmpv6.h>
+#include <linux/tcp.h>
 
 // translate prefix
 #define TRANSLATE_PREFIX 0x0064FF9B // 64:ff9b::/96
@@ -11,6 +12,7 @@
 
 #define MAX_UDP_SIZE 1480
 #define MAX_ICMP_SIZE 1480
+#define MAX_TCP_SIZE 1480
 
 #ifndef memcpy
 #define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
@@ -33,7 +35,7 @@ struct icmpv6_pseudo
     __u8 nh;
 } __attribute__((packed));
 
-static __always_inline int is_6to4(struct ipv6hdr *ip6h)
+static inline int is_6to4(struct ipv6hdr *ip6h)
 {
     if (bpf_htonl(ip6h->daddr.s6_addr32[0]) == TRANSLATE_PREFIX)
     {
@@ -42,18 +44,17 @@ static __always_inline int is_6to4(struct ipv6hdr *ip6h)
     return -1;
 }
 
-static __always_inline void set_4f6(struct iphdr *iph, struct ipv6hdr *ip6h, __u32 new_ip4)
+static inline int ipv6_addr_equal(struct in6_addr *a, struct in6_addr *b)
 {
-    iph->saddr = bpf_htonl((__be32)new_ip4);
-    iph->daddr = ip6h->daddr.s6_addr32[3];
-
-    iph->protocol = ip6h->nexthdr;
-    iph->ttl = ip6h->hop_limit;
-    iph->tos = ip6h->priority << 4 | (ip6h->flow_lbl[0] >> 4);
-    iph->tot_len = bpf_htons(bpf_ntohs(ip6h->payload_len) + sizeof(iph));
+    if (a->s6_addr32[0] == b->s6_addr32[0] && a->s6_addr32[1] == b->s6_addr32[1] &&
+        a->s6_addr32[2] == b->s6_addr32[2] && a->s6_addr32[3] == b->s6_addr32[3])
+        return 1;
+    return 0;
 }
 
-static __always_inline int write_icmp(struct icmphdr *icmp, struct icmp6hdr *icmp6)
+/******************************** PARSER HELPERS ******************************************/
+
+static inline int write_icmp(struct icmphdr *icmp, struct icmp6hdr *icmp6)
 {
     __u32 mtu, ptr;
     switch (icmp6->icmp6_type)
@@ -133,7 +134,7 @@ static __always_inline int write_icmp(struct icmphdr *icmp, struct icmp6hdr *icm
     return 0;
 }
 
-static __always_inline int write_icmp6(struct icmphdr *icmp, struct icmp6hdr *icmp6)
+static inline int write_icmp6(struct icmphdr *icmp, struct icmp6hdr *icmp6)
 {
     __u32 mtu;
     // 	/* These translations are defined in RFC6145 section 5.2 */
@@ -235,6 +236,8 @@ static __always_inline int write_icmp6(struct icmphdr *icmp, struct icmp6hdr *ic
     return 0;
 }
 
+/******************************** CHECKSUM HELPERS ******************************************/
+
 static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
 {
     __u32 csum_buffer = 0;
@@ -258,7 +261,7 @@ static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
     return ~csum;
 }
 
-static __always_inline __u32 sum16(__u16 *addr, __u8 len)
+static inline __u32 sum16(__u16 *addr, __u8 len)
 {
     __u32 sum = 0;
 
@@ -305,12 +308,146 @@ static inline __u16 icmpv6_cksum(struct ipv6hdr *ip6h, struct icmp6hdr *icmp6h, 
     return ~csum;
 }
 
+static inline __u16 udp_cksum(struct iphdr *iph, struct udphdr *udph, void *data_end)
+{
+    __u32 csum_buffer = 0;
+    __u16 volatile *buf = (void *)udph;
+
+    csum_buffer += (__u16)iph->saddr;
+    csum_buffer += (__u16)(iph->saddr >> 16);
+    csum_buffer += (__u16)iph->daddr;
+    csum_buffer += (__u16)(iph->daddr >> 16);
+    csum_buffer += (__u16)iph->protocol << 8;
+    csum_buffer += udph->len;
+
+    // Compute checksum on udp header + payload
+    for (int i = 0; i < MAX_UDP_SIZE; i += 2)
+    {
+        if ((void *)(buf + 1) > data_end)
+        {
+            break;
+        }
+
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)buf + 1 <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
+
+static inline __u16 udp6_cksum(struct ipv6hdr *ip6h, struct udphdr *udph, void *data_end)
+{
+    __u32 csum_buffer = 0;
+    __u16 volatile *buf = (void *)udph;
+
+    csum_buffer += sum16((__u16 *)&ip6h->saddr, sizeof(ip6h->saddr) >> 1);
+    csum_buffer += sum16((__u16 *)&ip6h->daddr, sizeof(ip6h->daddr) >> 1);
+    csum_buffer += (__u16)ip6h->nexthdr << 8;
+    csum_buffer += udph->len;
+
+    // Compute checksum on udp header + payload
+    for (int i = 0; i < MAX_UDP_SIZE; i += 2)
+    {
+        if ((void *)(buf + 1) > data_end)
+        {
+            break;
+        }
+
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)buf + 1 <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
+
+static inline __u16 tcp_cksum(struct iphdr *iph, struct tcphdr *tcph, void *data_end)
+{
+    __u32 csum_buffer = 0;
+    __u16 volatile *buf = (void *)tcph;
+
+    csum_buffer += (__u16)iph->saddr;
+    csum_buffer += (__u16)(iph->saddr >> 16);
+    csum_buffer += (__u16)iph->daddr;
+    csum_buffer += (__u16)(iph->daddr >> 16);
+    csum_buffer += (__u16)iph->protocol << 8;
+    csum_buffer += (__u16)bpf_htons(bpf_ntohs(iph->tot_len) - (iph->ihl << 2));
+
+    // Compute checksum on udp header + payload
+    for (int i = 0; i < MAX_TCP_SIZE; i += 2)
+    {
+        if ((void *)(buf + 1) > data_end)
+        {
+            break;
+        }
+
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)buf + 1 <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
+
+static inline __u16 tcp6_cksum(struct ipv6hdr *ip6h, struct tcphdr *tcph, void *data_end)
+{
+    __u32 csum_buffer = 0;
+    __u16 volatile *buf = (void *)tcph;
+
+    csum_buffer += sum16((__u16 *)&ip6h->saddr, sizeof(ip6h->saddr) >> 1);
+    csum_buffer += sum16((__u16 *)&ip6h->daddr, sizeof(ip6h->daddr) >> 1);
+    csum_buffer += (__u16)ip6h->nexthdr << 8;
+    csum_buffer += (__u16)ip6h->payload_len;
+
+    // Compute checksum on udp header + payload
+    for (int i = 0; i < MAX_TCP_SIZE; i += 2)
+    {
+        if ((void *)(buf + 1) > data_end)
+        {
+            break;
+        }
+
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)buf + 1 <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
+
 static inline __u16 csum_fold_helper(__u32 csum)
 {
     csum = (csum & 0xffff) + (csum >> 16);
     csum += csum >> 16;
     return (__u16)~csum;
 }
+
+/******************************** NOT USED ******************************************/
 
 // from 4 to 6
 // there is an errore, return 0
@@ -334,15 +471,7 @@ static inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
     return ~csum;
 }
 
-static __always_inline int ipv6_addr_equal(struct in6_addr *a, struct in6_addr *b)
-{
-    if (a->s6_addr32[0] == b->s6_addr32[0] && a->s6_addr32[1] == b->s6_addr32[1] &&
-        a->s6_addr32[2] == b->s6_addr32[2] && a->s6_addr32[3] == b->s6_addr32[3])
-        return 1;
-    return 0;
-}
-
-static __always_inline int ip_decrease_ttl(struct iphdr *iph)
+static inline int ip_decrease_ttl(struct iphdr *iph)
 {
     __u32 check = iph->check;
     check += bpf_htons(0x0100);
@@ -364,7 +493,8 @@ static inline void update_checksum(__u16 *csum, __u16 old_val, __u16 new_val)
     *csum = (__u16)~new_csum_comp;
 }
 
-static __always_inline __wsum icmp_wsum_accumulate(void *data_start, void *data_end, int sample_len)
+// cilium function
+static inline __wsum icmp_wsum_accumulate(void *data_start, void *data_end, int sample_len)
 {
     /* Unrolled loop to calculate the checksum of the ICMP sample
      * Done manually because the compiler refuses with #pragma unroll
