@@ -20,7 +20,7 @@ The NAT64 implementation supports the following protocols:
 - ICMP6
 
 ## Challenges and Workarounds
-During development, challenges were encountered, particularly in calculating the checksum for ICMP packets. A workaround was implemented using an accumulation function, resulting in a performance impact compared to using helper functions like bpf_csum_diff.
+During development, challenges were encountered, particularly in calculating the checksum for ICMP packets. A workaround was implemented using an accumulation function, resulting in a reduced performance compared to using helper functions like bpf_csum_diff.
 
 ## To-Do List
 
