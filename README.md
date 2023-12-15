@@ -5,12 +5,12 @@ As of now, the focus has been on developing small software modules using XDP for
 
 ## NAT64 Implementation
 
-The recent focus has been on implementing a simple yet effective NAT64 solution leveraging XDP. This involves the translation of IPv6 addresses to IPv4 addresses within the data path, showcasing the versatility of XDP in network function implementations.
+The recent focus has been on implementing a simple yet effective NAT64 solution leveraging XDP, involving the translation of IPv6 addresses to IPv4 addresses, showcasing its versatility in network function implementations.
 
 For more info see: [xdp-nat64](https://github.com/CiZ01/ebpf-perf-analytics/tree/main/ebpf-programs/xdp-nat64)
 
 ## Project Goals
-The initial idea of the goals of this project includes:
+My initial project goals were:
 
 [**Still to be defined**]
 
@@ -19,7 +19,7 @@ The initial idea of the goals of this project includes:
 - **Custom eBPF Tools**: Develop custom eBPF tools using the BCC framework for efficient performance data collection.
 
 ## Thesis
-This work is part of an ongoing internship, and a detailed thesis will be prepared to provide insights into the development, methodology, and findings of the performance analysis project.
+This work is part of an ongoing internship, and a detailed thesis will be prepared to provide insights about development, methodology, and findings of the performance analysis project.
 
 # Disclaimer
 
