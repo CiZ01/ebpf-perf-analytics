@@ -7,12 +7,15 @@
 # Copyright (c) 2016 Jan Ruth
 # Licensed under the Apache License, Version 2.0 (the "License")
 
-from bcc import BPF
+from bcc import BPF, Perf, PerfHWConfig, PerfType
 import pyroute2
 import time
 import sys
+import multiprocessing
 
 flags = 0
+
+
 def usage():
     print("Usage: {0} [-S] <ifdev>".format(sys.argv[0]))
     print("       -S: use skb mode\n")
@@ -20,6 +23,7 @@ def usage():
     print("       -H: use hardware offload mode\n")
     print("e.g.: {0} eth0\n".format(sys.argv[0]))
     exit(1)
+
 
 if len(sys.argv) < 2 or len(sys.argv) > 3:
     usage()
@@ -45,7 +49,7 @@ if len(sys.argv) == 3:
         flags |= BPF.XDP_FLAGS_HW_MODE
 
 mode = BPF.XDP
-#mode = BPF.SCHED_CLS
+# mode = BPF.SCHED_CLS
 
 if mode == BPF.XDP:
     ret = "XDP_DROP"
@@ -55,7 +59,8 @@ else:
     ctxtype = "__sk_buff"
 
 # load BPF program
-b = BPF(text = """
+b = BPF(
+    text="""
 #include <uapi/linux/bpf.h>
 #include <linux/in.h>
 #include <linux/if_ether.h>
@@ -65,6 +70,7 @@ b = BPF(text = """
 #include <linux/ipv6.h>
 
 BPF_TABLE(MAPTYPE, uint32_t, long, dropcnt, 256);
+BPF_PERF_OUTPUT(events);
 
 static inline int parse_ipv4(void *data, u64 nh_off, void *data_end) {
     struct iphdr *iph = data + nh_off;
@@ -83,6 +89,13 @@ static inline int parse_ipv6(void *data, u64 nh_off, void *data_end) {
 }
 
 int xdp_prog1(struct CTXTYPE *ctx) {
+
+    struct perf_event_attr attr = {};
+    attr.type = PERF_TYPE_HARDWARE;
+    attr.config = PERF_COUNT_HW_CPU_CYCLES;
+    attr.size = sizeof(struct perf_event_attr);
+    attr.disabled = 1;
+    attr.exclude_kernel = 1;
 
     void* data_end = (void*)(long)ctx->data_end;
     void* data = (void*)(long)ctx->data;
@@ -104,6 +117,7 @@ int xdp_prog1(struct CTXTYPE *ctx) {
     h_proto = eth->h_proto;
 
     // parse double vlans
+    trace();
     #pragma unroll
     for (int i=0; i<2; i++) {
         if (h_proto == htons(ETH_P_8021Q) || h_proto == htons(ETH_P_8021AD)) {
@@ -116,7 +130,8 @@ int xdp_prog1(struct CTXTYPE *ctx) {
                 h_proto = vhdr->h_vlan_encapsulated_proto;
         }
     }
-
+    end_trace();
+    
     if (h_proto == htons(ETH_P_IP))
         index = parse_ipv4(data, nh_off, data_end);
     else if (h_proto == htons(ETH_P_IPV6))
@@ -130,9 +145,16 @@ int xdp_prog1(struct CTXTYPE *ctx) {
 
     return rc;
 }
-""", cflags=["-w", "-DRETURNCODE=%s" % ret, "-DCTXTYPE=%s" % ctxtype,
-			 "-DMAPTYPE=\"%s\"" % maptype],
-     device=offload_device)
+""",
+    cflags=[
+        "-w",
+        "-DRETURNCODE=%s" % ret,
+        "-DCTXTYPE=%s" % ctxtype,
+        '-DMAPTYPE="%s"' % maptype,
+        "-DNUM_CPUS=%d" % multiprocessing.cpu_count(),
+    ],
+    device=offload_device,
+)
 
 fn = b.load_func("xdp_prog1", mode, offload_device)
 
@@ -143,8 +165,23 @@ else:
     ipdb = pyroute2.IPDB(nl=ip)
     idx = ipdb.interfaces[device].index
     ip.tc("add", "clsact", idx)
-    ip.tc("add-filter", "bpf", idx, ":1", fd=fn.fd, name=fn.name,
-          parent="ffff:fff2", classid=1, direct_action=True)
+    ip.tc(
+        "add-filter",
+        "bpf",
+        idx,
+        ":1",
+        fd=fn.fd,
+        name=fn.name,
+        parent="ffff:fff2",
+        classid=1,
+        direct_action=True,
+    )
+
+try:
+    b["events"].open_perf_event(PerfType.HARDWARE, PerfHWConfig.CPU_CYCLES)
+except:
+    raise
+
 
 dropcnt = b.get_table("dropcnt")
 prev = [0] * 256
@@ -162,6 +199,10 @@ while 1:
     except KeyboardInterrupt:
         print("Removing filter from device")
         break
+
+event = b.get_table("events")
+
+print(event.items())
 
 if mode == BPF.XDP:
     b.remove_xdp(device, flags)

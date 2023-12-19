@@ -13,20 +13,23 @@
 #define IP_BOUNDARY_END 0xc0a809fe   // 192.168.9.254
 
 // nattinh table
-BPF_HASH(natting_table, u32, struct in6_addr, 256);
+BPF_HASH(natting_table_4to6, u32, struct ipv6_addr32, 256);
+BPF_HASH(natting_table_6to4, struct ipv6_addr32, u32, 256);
+BPF_ARRAY(ip4_cnt, u32, 1);
 
 /*
+    TODO: fix this function, it is not working properly
     reset the ip passed as parameter in the natting_table
 */
-static inline int free_ip(__u32 ip)
+static inline int free_ip_4to6(__u32 ip)
 {
-    struct in6_addr *value;
-    value = natting_table.lookup(&ip);
+    struct ipv6_addr32 *value;
+    value = natting_table_4to6.lookup(&ip);
     if (value != NULL)
     {
         if (ipv6_addr_equal(value, NULL) == 0)
         {
-            natting_table.update(&ip, NULL);
+            natting_table_4to6.update(&ip, NULL);
             return 0;
         }
         return -1;
@@ -34,25 +37,41 @@ static inline int free_ip(__u32 ip)
     return -1;
 }
 
-/*
-    search inside the natting_table if the ip is already assigned
-    if value == NULL the ip is free
-    else the ip is already assigned
+static inline int assign_ipv4_to_ipv6(__be32 *ipv6_addr, __u32 *ip)
+{
+    int zero = 0;
+    __u32 *last_ip = ip4_cnt.lookup(&zero);
+    if (last_ip)
+    {
+        if (*last_ip + 1 < IP_BOUNDARY_END)
+        {
+            struct ipv6_addr32 addr32;
+            memcpy(addr32.addr, ipv6_addr, sizeof(addr32.addr));
 
-    After the search if the ip is free, the function assign the ipv6_addr to the ip
+            // update the natting table
+            natting_table_6to4.update(&addr32, last_ip);
+            natting_table_4to6.update(last_ip, &addr32);
 
-    this function is needed because call map.lookup()
-    inside a for involve in a error by the verifier
-*/
-static inline int find_free_ip(__u32 ip, struct in6_addr *ipv6_addr)
+            // update the counter
+            ip4_cnt.increment(zero);
+
+            // set the ipv4 address
+            *ip = *last_ip;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static inline int find_free_ip_6to4(struct ipv6_addr32 *ipv6_addr, __u32 ip)
 {
     __u32 *value;
-    value = natting_table.lookup(&ip);
-    if (value != NULL)
+    value = natting_table_6to4.lookup(&ip);
+    if (value)
     {
         if (*value == NULL)
         {
-            natting_table.update(&ip, ipv6_addr);
+            natting_table_6to4.update(&ip, ipv6_addr);
             return 0;
         }
     }
@@ -64,11 +83,11 @@ static inline int find_free_ip(__u32 ip, struct in6_addr *ipv6_addr)
     if the ipv4 is not found return 0
     else return 1 and set the ipv6_addr
 */
-static inline int search_ipv4_from_ipv6(__u32 ip, struct in6_addr *ipv6_addr)
+static inline int search_ipv4_from_ipv6(struct ipv6_addr32 *ipv6_addr, __u32 ip)
 {
-    struct in6_addr *value;
-    value = natting_table.lookup(&ip);
-    if (value != NULL)
+    struct ipv6_addr32 *value;
+    value = natting_table_6to4.lookup(&ip);
+    if (value)
     {
         if (ipv6_addr_equal(value, ipv6_addr) == 1)
         {
@@ -80,20 +99,20 @@ static inline int search_ipv4_from_ipv6(__u32 ip, struct in6_addr *ipv6_addr)
 
 /*
     search inside the natting_table the ipv6_addr associated to the ipv4
-    if the ipv4 is not found return 0
-    else return 1 and set the ipv6_addr
+    if the ipv6 is found return 0 and set the ipv6_addr
+    else return -1
 */
-static inline int search_ipv6_from_ipv4(__u32 ip, struct in6_addr *ipv6_addr)
+static inline int search_ipv6_from_ipv4(__u32 ip, __be32 *ipv6_addr)
 {
-    struct in6_addr *value;
+    struct ipv6_addr32 *value;
 
-    value = natting_table.lookup(&ip);
+    value = natting_table_4to6.lookup(&ip);
     if (value != NULL)
     {
-        // if finded ipv6 is different zero, the function return 0 (true)
+        // if finded ipv6 is different zero, the function return 0
         if (value != 0)
         {
-            *ipv6_addr = *value;
+            memcpy(ipv6_addr, value->addr, sizeof(value->addr));
             return 0;
         }
     }
@@ -106,6 +125,7 @@ int xdp_router_func(struct xdp_md *ctx)
     void *data_end = (void *)(long)ctx->data_end;
 
     __u16 rc;
+    int ret;
 
     struct bpf_fib_lookup fib_params = {0};
 
@@ -128,18 +148,20 @@ int xdp_router_func(struct xdp_md *ctx)
         if (ip6h + 1 > data_end)
             return XDP_DROP;
 
-        if (is_6to4(ip6h) == -1)
+        if (bpf_htonl(ip6h->daddr.s6_addr32[0]) != TRANSLATE_PREFIX)
         {
             // if the packet is not a 6to4, forward it
             fib_params.family = AF_INET6;
             *(struct in6_addr *)fib_params.ipv6_dst = ip6h->daddr;
             fib_params.ifindex = ctx->ingress_ifindex;
 
+            bpf_trace_printk("entro qa");
+
             goto forward;
         }
 
         // it must be defined here equal zero because the verifier
-        __u32 assigned_ipv4 = 0;
+        __u32 *assigned_ipv4 = 0;
 
         struct iphdr dst_hdr = {
             .version = 4,
@@ -147,30 +169,21 @@ int xdp_router_func(struct xdp_md *ctx)
             .frag_off = bpf_htons(1 << 14),
         };
 
-        // search inside the natting_table the ipv6_addr associated to the ipv4
-        for (__u32 ip = IP_BOUNDARY_START; ip <= IP_BOUNDARY_END; ip++)
-        {
-            int res = search_ipv4_from_ipv6(ip, &ip6h->saddr);
-            if (res == 0)
-            {
-                assigned_ipv4 = ip;
-                break;
-            }
-        }
+        struct ipv6_addr32 ipv6_addr_key;
 
-        // if the ipv4 is not found, search a free ipv4
-        if (assigned_ipv4 == 0)
+        // Copy values from src_array to dest_array
+        memcpy(ipv6_addr_key.addr, ip6h->daddr.in6_u.u6_addr32, sizeof(ip6h->daddr.in6_u.u6_addr32));
+
+        // find the ipv4 address associated to the ipv6 dest address
+        assigned_ipv4 = natting_table_6to4.lookup(&ipv6_addr_key);
+        // if the ipv4 is not found, search a free ipv4 to assign
+        if (assigned_ipv4 == NULL)
         {
-            // searching a free ipv4
-            for (__u32 ip = IP_BOUNDARY_START; ip <= IP_BOUNDARY_END; ip++)
+            ret = assign_ipv4_to_ipv6(&ip6h->daddr.in6_u.u6_addr32, &assigned_ipv4);
+            if (ret == -1)
             {
-                int res = find_free_ip(ip, &ip6h->saddr);
-                if (res == 0)
-                {
-                    assigned_ipv4 = ip;
-                    bpf_trace_printk("[IPV6]: IPV4 ASSIGNED: %pI4", &assigned_ipv4);
-                    break;
-                }
+                bpf_trace_printk("[ERR]: error during ipv4 assign");
+                return XDP_DROP;
             }
         }
 
@@ -180,6 +193,8 @@ int xdp_router_func(struct xdp_md *ctx)
             bpf_trace_printk("[WARN]: no free ipv4");
             return XDP_DROP;
         }
+
+        bpf_trace_printk("[IPV6]: %pI4", &assigned_ipv4);
 
         // set the ipv4 header
         dst_hdr.saddr = bpf_htonl((__be32)assigned_ipv4);
@@ -398,7 +413,7 @@ int xdp_router_4_func(struct xdp_md *ctx)
             return XDP_DROP;
 
         // find the ipv6 address associated to the ipv4 dest address
-        int res = search_ipv6_from_ipv4(bpf_htonl(iph->daddr), &dst_hdr.daddr);
+        int res = search_ipv6_from_ipv4(bpf_htons(iph->daddr), &dst_hdr.daddr);
         if (res == -1)
         {
             bpf_trace_printk("[ERR]: IPV6 address not found, packet droped!");

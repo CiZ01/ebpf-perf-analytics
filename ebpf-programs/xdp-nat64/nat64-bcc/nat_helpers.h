@@ -1,4 +1,6 @@
 #include <linux/bpf.h>
+#include <bpf/bpf_helpers.h>   
+#include <bpf/bpf_endian.h>
 
 #include <linux/ipv6.h>
 #include <linux/ip.h>
@@ -25,6 +27,11 @@
 #ifdef AF_INET6
 #define AF_INTET6 6
 #endif
+
+struct ipv6_addr32
+{
+    __be32 addr[4];
+};
 
 struct icmpv6_pseudo
 {
@@ -240,7 +247,7 @@ static inline int write_icmp6(struct icmphdr *icmp, struct icmp6hdr *icmp6)
 static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
 {
     __u32 csum_buffer = 0;
-    __u16 volatile *buf = (void *)icmph;
+    __u16 volatile *buf = (__u16*)icmph;
 
     for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
     {

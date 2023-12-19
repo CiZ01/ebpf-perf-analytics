@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# this script checks if all the libraries for testing the project are installed
+# if a library is not installed, the script will print a message
+
+
+# the function checks if the library list is installed in the system
+# if a library is not installed, the script will print a message
+
+RED=`tput setaf 1`
+GREEN=`tput setaf 2`
+BLUE=`tput setaf 4`
+RESET=`tput sgr0`
+
+
+
+check_c_libs() {
+    for lib in $@; do
+        if ! dpkg -s $lib >/dev/null 2>&1; then
+            echo "The library $RED$lib$RESET is not installed"
+            missing=1
+        fi
+    done
+}
+
+
+# the function checks if the python library list is installed in the system
+# if a library is not installed, the script will print a message
+check_python_libs() {
+    for lib in $@; do
+        if ! python3 -c "import $lib" >/dev/null 2>&1; then
+            echo "The library $RED$lib$RESET is not installed"
+            missing=1
+        fi
+    done
+}
+
+missing=0
+c_libs=("libbpf" "libbc")
+echo $BLUE"Checking C libraries..."$RESET
+check_c_libs "${c_libs[@]}"
+if [ -z $missing ]; then
+    echo $GREEN"All C libraries are installed"$RESET
+fi
+echo 
+
+missing=0
+echo $BLUE"Checking Python libraries..."$RESET
+python_libs=("pyroute2" "netifaces" "scapy")
+check_python_libs "${python_libs[@]}"
+if [ -z $missing ]; then
+    echo $GREEN"All Python libraries are installed"$RESET
+fi
+echo 
+
+echo "Done"
+
+exit 0
