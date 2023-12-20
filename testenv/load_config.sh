@@ -78,7 +78,7 @@ load_peer(){
     veth_peer=$(jq --arg ns "$ns_name" --arg veth "$veth_name" -r '.[] | select(.namespace == $ns) | .veths[] | select(.veth_name == $veth) | .veth_peer' $JSON_FILENAME)
     if [ "$veth_peer" == "null" ];
     then
-        ip link add $veth_name type dummy
+#        ip link add $veth_name type dummy
         return
     else
         veth_peer=$(echo $veth_peer | jq -r '.[]')
@@ -151,6 +151,8 @@ load_veths(){
                 
             done
         fi
+
+        echo "  $veth_name created"
     done
 }
 
@@ -190,6 +192,7 @@ load_gateway(){
 load_namespace(){
     JSON_FILENAME=$1
     for ((i = 0; i < $(jq length $JSON_FILENAME); i++)); do
+        echo "$ns_name:"
         namespace_config=$(jq -r ".[$i]" $JSON_FILENAME)
         
         if [ "$2" == "-v" ]; then
@@ -216,11 +219,16 @@ load_namespace(){
         load_veths $JSON_FILENAME $ns_name
         
         # setting ip forwarding
-        ip netns exec $ns_name sudo sysctl net.ipv4.conf.all.forwarding=1
-        ip netns exec $ns_name sudo sysctl net.ipv6.conf.all.forwarding=1
-        
-        
-        echo "$ns_name created"
+        ip netns exec $ns_name sudo sysctl net.ipv4.conf.all.forwarding=1 > /dev/null
+        ip netns exec $ns_name sudo sysctl net.ipv6.conf.all.forwarding=1 > /dev/null
+        echo " forwarding enabled"
+
+        # mount bpffs
+        ip netns exec $ns_name mount -t bpf bpf /sys/fs/bpf/ || { echo "Errore durante il mount di bpf"; exit 1; }
+        echo " bpf mounted"
+
+        echo "Done"
+        echo 
     done
     
     # now add the gateway to every namespaces

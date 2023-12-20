@@ -1,109 +1,206 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+static const char *__doc__ = "XDP loader\n"
+                             " - Allows selecting BPF program --progname name to XDP-attach to --dev\n";
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
-#include <unistd.h>
 #include <errno.h>
-#include <fcntl.h>
-#include <net/if.h>
 #include <getopt.h>
+
+#include <locale.h>
+#include <unistd.h>
+#include <time.h>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
+
 #include <xdp/libxdp.h>
 
-struct config
-{
-    char *filename;
-    char *section;
-    char *interface;
-    char *mode;
-};
+#include <net/if.h>
 
-static int parsearg(int argc, char **argv, struct config *cfg)
+#include "common/readconf.h"
+#include "common/common_params.h"
+
+#define FILENAME "xdp_router_kern.o"
+#define PIN_DIR "/sys/fs/bpf/router64"
+
+#define IP_BOUNDARY_START 0xC0A80901 // 192.168.9.1
+#define IP_BOUNDARY_END 0xC0A809FE   // 192.168.9.254
+
+#define CONF_PATH "router.conf"
+
+static const struct option_wrapper long_options[] = {
+
+    {{"load", no_argument, NULL, 'l'}, "load router", false},
+
+    {{"unload", required_argument, NULL, 'u'}, "detach all router from interfaces", false},
+
+    {{0, 0, NULL, 0}, NULL, false}};
+
+Section sections[2];
+int num_sections;
+struct xdp_program *prog_6to4;
+struct xdp_program *prog_4to6;
+
+static void detach_programs(int signo)
 {
-    int c;
-    while ((c = getopt(argc, argv, "f:s:i:m:")) != -1)
+    int curr_ifindex, err;
+
+    // unload 6 to 4
+    Section sec = sections[0];
+    for (int i = 0; i < sec.num_interfaces; i++)
     {
-        switch (c)
+        curr_ifindex = if_nametoindex(sec.interfaces[i]);
+        if (curr_ifindex == 0)
         {
-        case 'f':
-            cfg->filename = optarg;
-            break;
-        case 's':
-            cfg->section = optarg;
-            break;
-        case 'i':
-            cfg->interface = optarg;
-            break;
-        case 'm':
-            cfg->mode = optarg;
-            break;
-        default:
-            return -1;
+            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
+            exit(EXIT_FAILURE);
         }
+
+        err = xdp_program__detach(prog_6to4, curr_ifindex, XDP_MODE_SKB, 0);
+        if (err)
+        {
+            fprintf(stderr, "ERROR: Failed to detach program: %s\n", strerror(-err));
+            exit(EXIT_FAILURE);
+        }
+
+        printf("[INFO]: Detached program %s from interface %s\n", sec.section_name, sec.interfaces[i]);
     }
-    return 0;
+
+    // unload 4 to 6
+    sec = sections[1];
+    for (int i = 0; i < sec.num_interfaces; i++)
+    {
+        curr_ifindex = if_nametoindex(sec.interfaces[i]);
+        if (curr_ifindex == 0)
+        {
+            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+
+        err = xdp_program__detach(prog_4to6, curr_ifindex, XDP_MODE_SKB, 0);
+        if (err)
+        {
+            fprintf(stderr, "ERROR: Failed to detach program: %s\n", strerror(-err));
+            exit(EXIT_FAILURE);
+        }
+
+        printf("[INFO]: Detached program %s from interface %s\n", sec.section_name, sec.interfaces[i]);
+    }
+}
+
+static void attach_programs()
+{
+    int curr_ifindex, err;
+
+    // load 6 to 4
+    Section sec = sections[0];
+    for (int i = 0; i < sec.num_interfaces; i++)
+    {
+        curr_ifindex = if_nametoindex(sec.interfaces[i]);
+        if (curr_ifindex == 0)
+        {
+            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+
+        err = xdp_program__attach(prog_6to4, curr_ifindex, XDP_MODE_SKB, 0);
+        if (err)
+        {
+            detach_programs(0);
+            fprintf(stderr, "ERROR: Failed to attach program: %s\n", strerror(-err));
+            exit(EXIT_FAILURE);
+        }
+
+        printf("[INFO]: Attached program %s to interface %s\n", sec.section_name, sec.interfaces[i]);
+    }
+
+    // load 4 to 6
+    sec = sections[1];
+    for (int i = 0; i < sec.num_interfaces; i++)
+    {
+        curr_ifindex = if_nametoindex(sec.interfaces[i]);
+        if (curr_ifindex == 0)
+        {
+            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
+            exit(EXIT_FAILURE);
+        }
+
+        err = xdp_program__attach(prog_4to6, curr_ifindex, XDP_MODE_SKB, 0);
+        if (err)
+        {
+            detach_programs(0);
+            fprintf(stderr, "ERROR: Failed to attach program: %s\n", strerror(-err));
+            exit(EXIT_FAILURE);
+        }
+
+        printf("[INFO]: Attached program %s to interface %s\n", sec.section_name, sec.interfaces[i]);
+    }
 }
 
 int main(int argc, char **argv)
 {
-    if (argc < 3)
+    // parse command line args
+    struct config cfg;
+    parse_cmdline_args(argc, argv, long_options, &cfg, __doc__);
+
+    // read config file
+    int err;
+    err = readconf(CONF_PATH, sections, &num_sections);
+    if (err < 0)
     {
-        printf("Usage: %s -f <filename> -s <section> -i <interface> -m <mode>\n", argv[0]);
-        return 1;
+        fprintf(stderr, "ERROR: Failed to read config file: %s\n", strerror(-err));
+        exit(EXIT_FAILURE);
     }
 
-    // Allocate memory for struct config
-    struct config cfg_data;
-    struct config *cfg = &cfg_data;
-
-    // Initialize cfg fields to NULL
-    cfg->filename = NULL;
-    cfg->section = NULL;
-    cfg->interface = NULL;
-    cfg->mode = NULL;
-
-    if (parsearg(argc, argv, cfg))
+    // load programs
+    prog_6to4 = xdp_program__open_file(FILENAME, sections[0].section_name, NULL);
+    if (!prog_6to4)
     {
-        printf("Invalid argument\n");
-        return 1;
+        fprintf(stderr, "ERROR: Failed to open program file: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    prog_4to6 = xdp_program__open_file(FILENAME, sections[1].section_name, NULL);
+    if (!prog_4to6)
+    {
+        fprintf(stderr, "ERROR: Failed to open program file: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
     }
 
-    int prog_fd, map_fd, ret, err;
-    struct bpf_object *bpf_obj;
-
-    int ifindex = if_nametoindex(cfg->interface);
-    if (!ifindex)
+    // unload program
+    if (cfg.unload)
     {
-        printf("get ifindex from interface name failed\n");
-        return 1;
+        detach_programs(0);
     }
 
-    // Check if filename and section are provided
-    if (!cfg->filename || !cfg->section)
+    // init ipv4_cnt map
+    int map_fd;
+
+    map_fd = bpf_object__find_map_fd_by_name(xdp_program__bpf_obj(prog_6to4), "ip4_cnt");
+    if (map_fd < 0)
     {
-        printf("Both filename and section must be provided\n");
-        return 1;
+        fprintf(stderr, "ERROR: Failed to get map: %lld\n", libxdp_get_error(errno));
+        exit(EXIT_FAILURE);
     }
 
-    // Open the BPF object
-    struct xdp_program *prog = xdp_program__open_file(cfg->filename, cfg->section, NULL);
-
-    if (!prog)
+    err = bpf_map_update_elem(map_fd, 0, IP_BOUNDARY_START, BPF_ANY);
+    if (err < 0)
     {
-        printf("Failed to open BPF program\n");
-        return 1;
+        fprintf(stderr, "ERROR: Failed to update map: %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
     }
 
-    // Attach the BPF program
-    err = xdp_program__attach(prog, ifindex, XDP_MODE_SKB, 0);
+    attach_programs();
+    printf("[INFO]: Running...");
 
-    if (!err)
-        xdp_program__detach(prog, ifindex, XDP_MODE_SKB, 0);
+    signal(SIGINT, detach_programs);
+    signal(SIGTERM, detach_programs);
 
-    // Close the BPF program
-    xdp_program__close(prog);
+    while (1)
+    {
+        sleep(1);
+    }
 
     return 0;
 }

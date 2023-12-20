@@ -2,6 +2,7 @@ import sys
 import ctypes
 import pyroute2
 import subprocess as sp
+import resource as res
 from configparser import ConfigParser
 from time import sleep
 
@@ -40,6 +41,7 @@ def detach_all_xdp_programs():
 
 
 def main():
+    res.setrlimit(res.RLIMIT_MEMLOCK, (-1, -1))
     # load BPF program
     mode = "skb"
     sections = ["xdp_router_6to4", "xdp_router_4to6"]

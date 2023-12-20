@@ -1,5 +1,5 @@
 #include <linux/bpf.h>
-
+#include <bpf/bpf_endian.h>
 #include <linux/ipv6.h>
 #include <linux/ip.h>
 #include <linux/icmp.h>
@@ -35,9 +35,9 @@ struct icmpv6_pseudo
     __u8 nh;
 } __attribute__((packed));
 
-static inline int is_6to4(struct ipv6hdr *ip6h)
+static inline int is_6to4(struct ipv6hdr *pseudo_hdr)
 {
-    if (bpf_htonl(ip6h->daddr.s6_addr32[0]) == TRANSLATE_PREFIX)
+    if (bpf_htonl(pseudo_hdr->daddr.s6_addr32[0]) == TRANSLATE_PREFIX)
     {
         return 0;
     }
@@ -270,16 +270,16 @@ static inline __u32 sum16(__u16 *addr, __u8 len)
     return sum;
 }
 
-static inline __u16 icmpv6_cksum(struct ipv6hdr *ip6h, struct icmp6hdr *icmp6h, void *data_end)
+static inline __u16 icmpv6_cksum(struct icmpv6_pseudo *pseudo_hdr, struct icmp6hdr *icmp6h, void *data_end)
 {
     __u32 csum_buffer = 0;
     __u16 volatile *buf = (void *)icmp6h;
 
     // Compute checksum on ipv6 header, the icmp6 checksum include a ipv6 pseudo header
-    csum_buffer += sum16((__u16 *)&ip6h->saddr, sizeof(ip6h->saddr) >> 1);
-    csum_buffer += sum16((__u16 *)&ip6h->daddr, sizeof(ip6h->daddr) >> 1);
-    csum_buffer += bpf_htons((__u16)ip6h->nexthdr);
-    csum_buffer += ip6h->payload_len;
+    csum_buffer += sum16((__u16 *)&pseudo_hdr->saddr, sizeof(pseudo_hdr->saddr) >> 1);
+    csum_buffer += sum16((__u16 *)&pseudo_hdr->daddr, sizeof(pseudo_hdr->daddr) >> 1);
+    csum_buffer += bpf_htons((__u16)pseudo_hdr->nh);
+    csum_buffer += pseudo_hdr->len;
 
     // not needed, it seems that broke the checksum
     // it is already included in the icmp6 header
@@ -341,14 +341,14 @@ static inline __u16 udp_cksum(struct iphdr *iph, struct udphdr *udph, void *data
     return ~csum;
 }
 
-static inline __u16 udp6_cksum(struct ipv6hdr *ip6h, struct udphdr *udph, void *data_end)
+static inline __u16 udp6_cksum(struct ipv6hdr *pseudo_hdr, struct udphdr *udph, void *data_end)
 {
     __u32 csum_buffer = 0;
     __u16 volatile *buf = (void *)udph;
 
-    csum_buffer += sum16((__u16 *)&ip6h->saddr, sizeof(ip6h->saddr) >> 1);
-    csum_buffer += sum16((__u16 *)&ip6h->daddr, sizeof(ip6h->daddr) >> 1);
-    csum_buffer += (__u16)ip6h->nexthdr << 8;
+    csum_buffer += sum16((__u16 *)&pseudo_hdr->saddr, sizeof(pseudo_hdr->saddr) >> 1);
+    csum_buffer += sum16((__u16 *)&pseudo_hdr->daddr, sizeof(pseudo_hdr->daddr) >> 1);
+    csum_buffer += (__u16)pseudo_hdr->nexthdr << 8;
     csum_buffer += udph->len;
 
     // Compute checksum on udp header + payload
@@ -407,15 +407,15 @@ static inline __u16 tcp_cksum(struct iphdr *iph, struct tcphdr *tcph, void *data
     return ~csum;
 }
 
-static inline __u16 tcp6_cksum(struct ipv6hdr *ip6h, struct tcphdr *tcph, void *data_end)
+static inline __u16 tcp6_cksum(struct ipv6hdr *pseudo_hdr, struct tcphdr *tcph, void *data_end)
 {
     __u32 csum_buffer = 0;
     __u16 volatile *buf = (void *)tcph;
 
-    csum_buffer += sum16((__u16 *)&ip6h->saddr, sizeof(ip6h->saddr) >> 1);
-    csum_buffer += sum16((__u16 *)&ip6h->daddr, sizeof(ip6h->daddr) >> 1);
-    csum_buffer += (__u16)ip6h->nexthdr << 8;
-    csum_buffer += (__u16)ip6h->payload_len;
+    csum_buffer += sum16((__u16 *)&pseudo_hdr->saddr, sizeof(pseudo_hdr->saddr) >> 1);
+    csum_buffer += sum16((__u16 *)&pseudo_hdr->daddr, sizeof(pseudo_hdr->daddr) >> 1);
+    csum_buffer += (__u16)pseudo_hdr->nexthdr << 8;
+    csum_buffer += (__u16)pseudo_hdr->payload_len;
 
     // Compute checksum on udp header + payload
     for (int i = 0; i < MAX_TCP_SIZE; i += 2)

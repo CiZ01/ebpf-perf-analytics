@@ -3,3 +3,5 @@ __pycache__
 id_rsa
 *.pub
 lib
+*.o
+xdp_router_user

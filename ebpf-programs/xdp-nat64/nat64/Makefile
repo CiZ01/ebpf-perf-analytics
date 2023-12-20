@@ -14,13 +14,11 @@ $(XDP_KERN_PROG): $(XDP_PROG_NAME)_kern.c
 	-O2 \
 	-g \
 	-target bpf \
-	-lbpf \
-	-lbxdp \
 	-c $< \
 	-o $@
 
 $(XDP_USER_PROG): $(XDP_PROG_NAME)_user.c
-	$(CC) $< -o $@ -lxdp -lbpf
+	$(CC) -g -Wall -O2 common/common_params.c $< -o $@ -lxdp -lbpf
 
 clean:
 	rm -f $(XDP_KERN_PROG) $(XDP_USER_PROG)

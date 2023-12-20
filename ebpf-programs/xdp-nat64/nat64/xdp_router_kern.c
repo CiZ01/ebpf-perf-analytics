@@ -2,6 +2,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 
+#include <sys/resource.h>
 #include <linux/in.h>
 #include <linux/if_ether.h>
 #include <linux/ip.h>
@@ -27,6 +28,7 @@ struct
     __type(key, __u32);
     __type(value, struct ipv6_addr32);
     __uint(max_entries, 256);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } nat_4to6 SEC(".maps");
 
 struct
@@ -35,6 +37,7 @@ struct
     __type(key, struct ipv6_addr32);
     __type(value, __u32);
     __uint(max_entries, 256);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } nat_6to4 SEC(".maps");
 
 struct
@@ -43,6 +46,7 @@ struct
     __type(key, __u32);
     __type(value, __u32);
     __uint(max_entries, 1);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ip4_cnt SEC(".maps");
 
 static inline int free_ip_4to6(__u32 ip)
@@ -135,6 +139,7 @@ static inline int search_ipv6_from_ipv4(__u32 ip, __be32 *ipv6_addr)
 SEC("xdp_router_6to4")
 int xdp_router_6to4_func(struct xdp_md *ctx)
 {
+
     bpf_printk("DIOSIODSI");
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -430,7 +435,7 @@ int xdp_router_4to6_func(struct xdp_md *ctx)
             return XDP_DROP;
 
         // find the ipv6 address associated to the ipv4 dest address
-        int res = search_ipv6_from_ipv4(bpf_htons(iph->daddr), &dst_hdr.daddr);
+        int res = search_ipv6_from_ipv4(bpf_htons(iph->daddr), (__be32 *)&dst_hdr.daddr.in6_u.u6_addr32);
         if (res == -1)
         {
             bpf_printk("[ERR]: IPV6 address not found, packet droped!");
@@ -455,7 +460,7 @@ int xdp_router_4to6_func(struct xdp_md *ctx)
             if (icmp + 1 > data_end)
                 return XDP_DROP;
 
-            struct icmp6hdr icmp6;
+            struct icmp6hdr icmp6 = {0};
             struct icmp6hdr *new_icmp6;
 
             if (write_icmp6(icmp, &icmp6) == -1)
@@ -471,16 +476,12 @@ int xdp_router_4to6_func(struct xdp_md *ctx)
             data_end = (void *)(long)ctx->data_end;
 
             new_icmp6 = (void *)(data + sizeof(struct ethhdr) + sizeof(struct iphdr));
-
             if (new_icmp6 + 1 > data_end)
-            {
                 return XDP_DROP;
-            }
 
             *new_icmp6 = icmp6;
 
             // TODO REFORMAT THIS PART
-            // not needed, the icmpv6_cksum function bring the ipv6 header
             struct icmpv6_pseudo ph = {
                 .nh = IPPROTO_ICMPV6, .saddr = dst_hdr.saddr, .daddr = dst_hdr.daddr, .len = dst_hdr.payload_len};
 
