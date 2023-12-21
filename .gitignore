@@ -3,5 +3,7 @@ __pycache__
 id_rsa
 *.pub
 lib
-*.o
+/*.o
 xdp_router_user
+ebpf-programs/xdp-nat64/nat64/xdp_router_kern.c
+ebpf-programs/xdp-nat64/nat64/xdp_router_user

@@ -81,7 +81,8 @@ static inline int assign_ipv4_to_ipv6(__be32 ipv6_addr[4], __u32 *ip)
             bpf_map_update_elem(&nat_4to6, last_ip, &addr32, BPF_ANY);
 
             // update the counter
-            bpf_map_update_elem(&ip4_cnt, &zero, last_ip, BPF_ANY);
+            __u32 next_ip = *last_ip + 1;
+            bpf_map_update_elem(&ip4_cnt, &zero, &next_ip, BPF_ANY);
 
             // set the ipv4 address
             *ip = *last_ip;
@@ -123,6 +124,7 @@ static inline int search_ipv4_from_ipv6(struct ipv6_addr32 *ipv6_addr, __u32 ip)
 static inline int search_ipv6_from_ipv4(__u32 ip, __be32 *ipv6_addr)
 {
     struct ipv6_addr32 *value;
+    bpf_printk("[IPV4]: %pI4", &ip);
 
     value = bpf_map_lookup_elem(&nat_4to6, &ip);
     if (value)
@@ -180,7 +182,7 @@ int xdp_router_6to4_func(struct xdp_md *ctx)
         }
 
         // it must be defined here equal zero because the verifier
-        __u32 *assigned_ipv4 = 0;
+        __u32 assigned_ipv4 = 0; // Change the type from pointer to value
 
         struct iphdr dst_hdr = {
             .version = 4,
@@ -191,32 +193,34 @@ int xdp_router_6to4_func(struct xdp_md *ctx)
         struct ipv6_addr32 ipv6_addr_key;
 
         // Copy values from src_array to dest_array
-        memcpy(ipv6_addr_key.addr, ip6h->daddr.in6_u.u6_addr32, sizeof(ip6h->daddr.in6_u.u6_addr32));
+        memcpy(ipv6_addr_key.addr, ip6h->saddr.in6_u.u6_addr32, sizeof(ip6h->saddr.in6_u.u6_addr32));
 
         // find the ipv4 address associated to the ipv6 dest address
-        assigned_ipv4 = bpf_map_lookup_elem(&nat_6to4, &ipv6_addr_key);
+        __u32 *assigned_ipv4_ptr = bpf_map_lookup_elem(&nat_6to4, &ipv6_addr_key); // Change the variable name
+
         // if the ipv4 is not found, search a free ipv4 to assign
-        if (assigned_ipv4)
+        if (assigned_ipv4_ptr == NULL)
         {
-            ret = assign_ipv4_to_ipv6(ip6h->daddr.in6_u.u6_addr32, assigned_ipv4);
+            ret = assign_ipv4_to_ipv6(ip6h->saddr.in6_u.u6_addr32, &assigned_ipv4); // Pass the address of assigned_ipv4
             if (ret == -1)
             {
                 bpf_printk("[ERR]: error during ipv4 assign");
                 return XDP_DROP;
             }
+
+            // if the ipv4 is not found, drop the packet
+            if (!assigned_ipv4)
+            {
+                bpf_printk("[WARN]: no free ipv4");
+                return XDP_DROP;
+            }
         }
 
-        // if the ipv4 is not found, drop the packet
-        if (assigned_ipv4 == 0)
-        {
-            bpf_printk("[WARN]: no free ipv4");
-            return XDP_DROP;
-        }
-
-        bpf_printk("[IPV6]: %pI4", &assigned_ipv4);
+        bpf_probe_read_kernel(&assigned_ipv4, sizeof(assigned_ipv4), assigned_ipv4_ptr); // Change the variable name
 
         // set the ipv4 header
-        dst_hdr.saddr = bpf_htonl((__be32)*assigned_ipv4);
+        dst_hdr.saddr = bpf_htonl(assigned_ipv4); // Use the assigned_ipv4 value directly
+        bpf_printk("[IPV6]: %pI4", &dst_hdr.saddr);
         dst_hdr.daddr = ip6h->daddr.s6_addr32[3];
         dst_hdr.protocol = ip6h->nexthdr;
         dst_hdr.ttl = ip6h->hop_limit;
@@ -231,7 +235,7 @@ int xdp_router_6to4_func(struct xdp_md *ctx)
                 return XDP_DROP;
 
             // ready to parse the icmpv6 header into icmp
-            struct icmphdr tmp_icmp;
+            struct icmphdr tmp_icmp = {0};
             struct icmphdr *icmp;
 
             if (write_icmp(&tmp_icmp, icmp6h) == -1)
@@ -255,10 +259,9 @@ int xdp_router_6to4_func(struct xdp_md *ctx)
 
             // set the checksum
             icmp->checksum = 0;
-            //__u16 new_cksum = icmp_cksum(icmp, (void *)data_end);
-            __u16 new_cksum =
-                csum_fold_helper(bpf_csum_diff((__be32 *)icmp, 0, (__be32 *)icmp, sizeof(struct icmphdr), 0));
-            // bpf_printk("[IPV6]: checksum: %x", bpf_htons(new_cksum));
+            __u16 new_cksum = icmp_cksum(icmp, (void *)data_end);
+            //__u16 new_cksum = csum_fold_helper(bpf_csum_diff(0, 0, (__be32 *)icmp, sizeof(struct icmphdr), 0));
+            bpf_printk("[IPV6]: checksum: %x", bpf_htons(new_cksum));
 
             /*
             after the checksum is calculated, the verifier complains about a possible
@@ -359,7 +362,7 @@ forward:
     case BPF_FIB_LKUP_RET_BLACKHOLE:   /* dest is blackholed; can be dropped */
     case BPF_FIB_LKUP_RET_UNREACHABLE: /* dest is unreachable; can be dropped */
     case BPF_FIB_LKUP_RET_PROHIBIT:    /* dest not allowed; can be dropped */
-
+        bpf_printk("[IPV6]: ERROR: %d", rc);
         return XDP_PASS;
     case BPF_FIB_LKUP_RET_NOT_FWDED: /* packet is not forwarded */
         // bpf_printk("route not found, check if routing suite is working properly");
@@ -368,6 +371,7 @@ forward:
     case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
         // bpf_printk("neigh entry missing");
     case BPF_FIB_LKUP_RET_FRAG_NEEDED: /* fragmentation required to fwd */
+        bpf_printk("[IPV6]: ERROR: %d", rc);
         return XDP_PASS;
     }
 
@@ -435,7 +439,7 @@ int xdp_router_4to6_func(struct xdp_md *ctx)
             return XDP_DROP;
 
         // find the ipv6 address associated to the ipv4 dest address
-        int res = search_ipv6_from_ipv4(bpf_htons(iph->daddr), (__be32 *)&dst_hdr.daddr.in6_u.u6_addr32);
+        int res = search_ipv6_from_ipv4(bpf_htonl(iph->daddr), (__be32 *)&dst_hdr.daddr.in6_u.u6_addr32);
         if (res == -1)
         {
             bpf_printk("[ERR]: IPV6 address not found, packet droped!");
@@ -447,6 +451,7 @@ int xdp_router_4to6_func(struct xdp_md *ctx)
         dst_hdr.saddr.in6_u.u6_addr32[3] = iph->saddr;
 
         bpf_printk("[IPV4]: IPV6 ASSIGNED: %pI6", &dst_hdr.saddr.s6_addr32);
+        bpf_printk("[IPV4]: IPV6 DEST: %pI6", &dst_hdr.daddr.s6_addr32);
 
         dst_hdr.nexthdr = iph->protocol;
         dst_hdr.hop_limit = iph->ttl;
@@ -576,6 +581,7 @@ forward:
     case BPF_FIB_LKUP_RET_BLACKHOLE:   /* dest is blackholed; can be dropped */
     case BPF_FIB_LKUP_RET_UNREACHABLE: /* dest is unreachable; can be dropped */
     case BPF_FIB_LKUP_RET_PROHIBIT:    /* dest not allowed; can be dropped */
+        bpf_printk("[IPV4]: ERROR: %d", rc);
         return XDP_DROP;
     case BPF_FIB_LKUP_RET_NOT_FWDED: /* packet is not forwarded */
         // bpf_printk("route not found, check if routing suite is working properly");
@@ -584,6 +590,7 @@ forward:
     case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
         // bpf_printk("neigh entry missing");
     case BPF_FIB_LKUP_RET_FRAG_NEEDED: /* fragmentation required to fwd */
+        bpf_printk("[IPV4]: ERROR: %d", rc);
         return XDP_PASS;
     }
     return XDP_PASS;

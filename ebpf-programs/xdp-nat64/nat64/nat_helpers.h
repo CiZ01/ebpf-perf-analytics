@@ -240,11 +240,12 @@ static inline int write_icmp6(struct icmphdr *icmp, struct icmp6hdr *icmp6)
 static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
 {
     __u32 csum_buffer = 0;
-    __u16 volatile *buf = (void *)icmph;
+    __u16 *buf = (void *)icmph;
 
+#pragma unroll
     for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
     {
-        if ((void *)buf + 1 > data_end)
+        if ((void *)(buf + 1) > data_end)
             break;
         csum_buffer += *buf;
         buf++;
@@ -458,13 +459,10 @@ static inline __u16 calculate_icmp_checksum(__u16 *icmph, __u16 *ph)
         sum += *ph++;
     }
 
-    bpf_trace_printk("sum: %x", sum);
-
     for (int i = 0; i < 4; i++)
     {
         sum += *icmph++;
     }
-    bpf_trace_printk("2. sum: %x", sum);
 
     __u16 csum = (__u16)sum + (__u16)(sum >> 16);
     return ~csum;

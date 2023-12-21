@@ -13,6 +13,7 @@ $(XDP_KERN_PROG): $(XDP_PROG_NAME)_kern.c
 	$(CLANG) \
 	-O2 \
 	-g \
+	-Wno-compare-distinct-pointer-types \
 	-target bpf \
 	-c $< \
 	-o $@

@@ -8,6 +8,10 @@ static const char *__doc__ = "XDP loader\n"
 #include <errno.h>
 #include <getopt.h>
 
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+
 #include <locale.h>
 #include <unistd.h>
 #include <time.h>
@@ -23,7 +27,8 @@ static const char *__doc__ = "XDP loader\n"
 #include "common/common_params.h"
 
 #define FILENAME "xdp_router_kern.o"
-#define PIN_DIR "/sys/fs/bpf/router64"
+#define PIN_DIR "/sys/fs/bpf/xdp/router64"
+#define PATH_MAX 256
 
 #define IP_BOUNDARY_START 0xC0A80901 // 192.168.9.1
 #define IP_BOUNDARY_END 0xC0A809FE   // 192.168.9.254
@@ -34,7 +39,7 @@ static const struct option_wrapper long_options[] = {
 
     {{"load", no_argument, NULL, 'l'}, "load router", false},
 
-    {{"unload", required_argument, NULL, 'u'}, "detach all router from interfaces", false},
+    {{"unload", no_argument, NULL, 'u'}, "detach all router from interfaces", false},
 
     {{0, 0, NULL, 0}, NULL, false}};
 
@@ -42,6 +47,7 @@ Section sections[2];
 int num_sections;
 struct xdp_program *prog_6to4;
 struct xdp_program *prog_4to6;
+char *errmsg[256];
 
 static void detach_programs(int signo)
 {
@@ -68,6 +74,8 @@ static void detach_programs(int signo)
         printf("[INFO]: Detached program %s from interface %s\n", sec.section_name, sec.interfaces[i]);
     }
 
+    xdp_program__close(prog_6to4);
+
     // unload 4 to 6
     sec = sections[1];
     for (int i = 0; i < sec.num_interfaces; i++)
@@ -88,6 +96,10 @@ static void detach_programs(int signo)
 
         printf("[INFO]: Detached program %s from interface %s\n", sec.section_name, sec.interfaces[i]);
     }
+
+    xdp_program__close(prog_4to6);
+
+    exit(EXIT_SUCCESS);
 }
 
 static void attach_programs()
@@ -173,6 +185,7 @@ int main(int argc, char **argv)
     {
         detach_programs(0);
     }
+    attach_programs();
 
     // init ipv4_cnt map
     int map_fd;
@@ -184,14 +197,16 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
-    err = bpf_map_update_elem(map_fd, 0, IP_BOUNDARY_START, BPF_ANY);
+    int key = 0;
+    int value = IP_BOUNDARY_START;
+    err = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
     if (err < 0)
     {
         fprintf(stderr, "ERROR: Failed to update map: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
-    attach_programs();
+    fflush(stdout);
     printf("[INFO]: Running...");
 
     signal(SIGINT, detach_programs);
