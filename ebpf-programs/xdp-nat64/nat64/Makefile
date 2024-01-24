@@ -11,10 +11,11 @@ all: $(XDP_USER_PROG) $(XDP_KERN_PROG)
 
 $(XDP_KERN_PROG): $(XDP_PROG_NAME)_kern.c
 	$(CLANG) \
-	-O2 \
+	-O1 \
 	-g \
 	-Wno-compare-distinct-pointer-types \
 	-target bpf \
+	-lelf -lbfd -lopcodes \
 	-c $< \
 	-o $@
 

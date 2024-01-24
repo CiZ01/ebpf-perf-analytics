@@ -142,7 +142,6 @@ SEC("xdp_router_6to4")
 int xdp_router_6to4_func(struct xdp_md *ctx)
 {
 
-    bpf_printk("DIOSIODSI");
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
 
