@@ -215,17 +215,21 @@ load_namespace(){
             ns_prompt=$pretty_prompt
         fi
         
+        # this should be removed
         echo "export PS1='$ns_prompt'" > ~/."$ns_name"_bashrc
         load_veths $JSON_FILENAME $ns_name
         
         # setting ip forwarding
+        # THIS should be added to bashrc
         ip netns exec $ns_name sudo sysctl net.ipv4.conf.all.forwarding=1 > /dev/null
         ip netns exec $ns_name sudo sysctl net.ipv6.conf.all.forwarding=1 > /dev/null
         echo " forwarding enabled"
 
-        # mount bpffs
-        ip netns exec $ns_name mount -t bpf bpf /sys/fs/bpf/ || { echo "Errore durante il mount di bpf"; exit 1; }
-        echo " bpf mounted"
+        # mount bpffs USELESS
+        # this should be performend in init script
+        ip netns exec $ns_name mount -t bpf bpffs /sys/fs/bpf || { echo "Errore durante il mount di bpf"; exit 1; }
+        ip netns exec $ns_name mount --make-shared /sys/fs/bpf || { echo "Errore durante --make-shared del mount bpf"; exit 1;}
+	echo " bpf mounted"
 
         echo "Done"
         echo 

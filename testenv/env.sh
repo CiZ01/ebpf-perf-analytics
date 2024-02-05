@@ -115,7 +115,7 @@ enter_namespace(){
     then
         ns1=$(ip netns list | awk '{print $1}')
         
-        ip netns exec $ns1 bash --rcfile ."$ns1"_bashrc
+        ip netns exec $ns1 bash --rcfile ~/."$ns1"_bashrc
         exit 0
     fi
     

@@ -16,6 +16,7 @@ static const char *__doc__ = "XDP loader\n"
 #include <unistd.h>
 #include <time.h>
 
+#include <linux/bpf.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
@@ -23,8 +24,8 @@ static const char *__doc__ = "XDP loader\n"
 
 #include <net/if.h>
 
-#include "common/readconf.h"
-#include "common/common_params.h"
+#include "../common/readconf.h"
+#include "../common/common_params.h"
 
 #define FILENAME "xdp_router_kern.o"
 #define PIN_DIR "/sys/fs/bpf/xdp/router64"
@@ -45,15 +46,15 @@ static const struct option_wrapper long_options[] = {
 
 Section sections[2];
 int num_sections;
-struct xdp_program *prog_6to4;
-struct xdp_program *prog_4to6;
-char *errmsg[256];
+struct xdp_program *router;
+struct xdp_program **progs;
+char errmsg[256];
 
 static void detach_programs(int signo)
 {
     int curr_ifindex, err;
+    struct xdp_multiprog *mp = {0};
 
-    // unload 6 to 4
     Section sec = sections[0];
     for (int i = 0; i < sec.num_interfaces; i++)
     {
@@ -64,7 +65,9 @@ static void detach_programs(int signo)
             exit(EXIT_FAILURE);
         }
 
-        err = xdp_program__detach(prog_6to4, curr_ifindex, XDP_MODE_SKB, 0);
+        mp = xdp_multiprog__get_from_ifindex(curr_ifindex);
+
+        err = xdp_multiprog__detach(mp);
         if (err)
         {
             fprintf(stderr, "ERROR: Failed to detach program: %s\n", strerror(-err));
@@ -74,31 +77,7 @@ static void detach_programs(int signo)
         printf("[INFO]: Detached program %s from interface %s\n", sec.section_name, sec.interfaces[i]);
     }
 
-    xdp_program__close(prog_6to4);
-
-    // unload 4 to 6
-    sec = sections[1];
-    for (int i = 0; i < sec.num_interfaces; i++)
-    {
-        curr_ifindex = if_nametoindex(sec.interfaces[i]);
-        if (curr_ifindex == 0)
-        {
-            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        err = xdp_program__detach(prog_4to6, curr_ifindex, XDP_MODE_SKB, 0);
-        if (err)
-        {
-            fprintf(stderr, "ERROR: Failed to detach program: %s\n", strerror(-err));
-            exit(EXIT_FAILURE);
-        }
-
-        printf("[INFO]: Detached program %s from interface %s\n", sec.section_name, sec.interfaces[i]);
-    }
-
-    xdp_program__close(prog_4to6);
-
+    xdp_multiprog__close(mp);
     exit(EXIT_SUCCESS);
 }
 
@@ -106,7 +85,6 @@ static void attach_programs()
 {
     int curr_ifindex, err;
 
-    // load 6 to 4
     Section sec = sections[0];
     for (int i = 0; i < sec.num_interfaces; i++)
     {
@@ -117,38 +95,49 @@ static void attach_programs()
             exit(EXIT_FAILURE);
         }
 
-        err = xdp_program__attach(prog_6to4, curr_ifindex, XDP_MODE_SKB, 0);
+        err = xdp_program__attach(router, curr_ifindex, XDP_MODE_SKB, 0);
         if (err)
         {
+            libbpf_strerror(err, errmsg, sizeof(errmsg));
+            fprintf(stderr, "ERROR: Failed to attach %s program: %s\n", sec.section_name, errmsg);
             detach_programs(0);
-            fprintf(stderr, "ERROR: Failed to attach program: %s\n", strerror(-err));
             exit(EXIT_FAILURE);
         }
 
+        // TODO ping program (???)
+        // xdp_program__pin(prog_6to4, NULL);
+
         printf("[INFO]: Attached program %s to interface %s\n", sec.section_name, sec.interfaces[i]);
     }
+}
 
-    // load 4 to 6
-    sec = sections[1];
-    for (int i = 0; i < sec.num_interfaces; i++)
+static int prog_info(int fd)
+{
+    struct bpf_prog_info info = {};
+    union bpf_attr attr;
+
+    int err;
+
+    memset(&attr, 0, sizeof(attr));
+    attr.info.bpf_fd = fd;
+    attr.info.info_len = sizeof(info);
+    attr.info.info = (__u64)&info;
+
+    err = bpf_obj_get_info_by_fd(fd, &info, &attr.info.info_len);
+    if (err < 0)
     {
-        curr_ifindex = if_nametoindex(sec.interfaces[i]);
-        if (curr_ifindex == 0)
-        {
-            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        err = xdp_program__attach(prog_4to6, curr_ifindex, XDP_MODE_SKB, 0);
-        if (err)
-        {
-            detach_programs(0);
-            fprintf(stderr, "ERROR: Failed to attach program: %s\n", strerror(-err));
-            exit(EXIT_FAILURE);
-        }
-
-        printf("[INFO]: Attached program %s to interface %s\n", sec.section_name, sec.interfaces[i]);
+        return -1;
     }
+
+    printf("[INFO]: %d run_cnt: ", fd);
+
+    while (1)
+    {
+        printf("\r%lld\n", info.run_cnt);
+        sleep(1);
+    }
+    printf("\n");
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -167,16 +156,10 @@ int main(int argc, char **argv)
     }
 
     // load programs
-    prog_6to4 = xdp_program__open_file(FILENAME, sections[0].section_name, NULL);
-    if (!prog_6to4)
+    router = xdp_program__open_file(FILENAME, sections[0].section_name, NULL);
+    if (libxdp_get_error(router) < 0)
     {
-        fprintf(stderr, "ERROR: Failed to open program file: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
-    }
-    prog_4to6 = xdp_program__open_file(FILENAME, sections[1].section_name, NULL);
-    if (!prog_4to6)
-    {
-        fprintf(stderr, "ERROR: Failed to open program file: %s\n", strerror(errno));
+        fprintf(stderr, "ERROR: Failed to open program file: %ld\n", libxdp_get_error(router));
         exit(EXIT_FAILURE);
     }
 
@@ -190,10 +173,10 @@ int main(int argc, char **argv)
     // init ipv4_cnt map
     int map_fd;
 
-    map_fd = bpf_object__find_map_fd_by_name(xdp_program__bpf_obj(prog_6to4), "ip4_cnt");
+    map_fd = bpf_object__find_map_fd_by_name(xdp_program__bpf_obj(router), "ip4_cnt");
     if (map_fd < 0)
     {
-        fprintf(stderr, "ERROR: Failed to get map: %lld\n", libxdp_get_error(errno));
+        fprintf(stderr, "ERROR: Failed to get map: %s\n", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -206,15 +189,19 @@ int main(int argc, char **argv)
         exit(EXIT_FAILURE);
     }
 
+    printf("[INFO]: Running...\n");
     fflush(stdout);
-    printf("[INFO]: Running...");
 
     signal(SIGINT, detach_programs);
     signal(SIGTERM, detach_programs);
 
-    while (1)
+    err = prog_info(xdp_program__fd(router));
+    if (err < 0)
     {
-        sleep(1);
+        fprintf(stderr, "ERROR: Failed to get program info: %s\n", strerror(errno));
+        detach_programs(0);
+
+        exit(EXIT_FAILURE);
     }
 
     return 0;

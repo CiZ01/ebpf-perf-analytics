@@ -138,7 +138,6 @@ static inline int search_ipv6_from_ipv4(__u32 ip, __be32 *ipv6_addr)
     return -1;
 }
 
-SEC("xdp_router_6to4")
 int xdp_router_6to4_func(struct xdp_md *ctx)
 {
 
@@ -377,7 +376,6 @@ forward:
     return XDP_PASS;
 }
 
-SEC("xdp_router_4to6")
 int xdp_router_4to6_func(struct xdp_md *ctx)
 {
     void *data_end = (void *)(long)ctx->data_end;
@@ -591,6 +589,29 @@ forward:
     case BPF_FIB_LKUP_RET_FRAG_NEEDED: /* fragmentation required to fwd */
         bpf_printk("[IPV4]: ERROR: %d", rc);
         return XDP_PASS;
+    }
+    return XDP_PASS;
+}
+
+SEC("xdp_router")
+int xdp_router_func(struct xdp_md *ctx)
+{
+    void *data = (void *)(long)ctx->data;
+    void *data_end = (void *)(long)ctx->data_end;
+    struct ethhdr *eth = data;
+
+    __u64 nh_off = sizeof(*eth);
+
+    if (data + nh_off > data_end)
+        return XDP_DROP;
+
+    if (eth->h_proto == bpf_htons(ETH_P_IPV6))
+    {
+        return xdp_router_6to4_func(ctx);
+    }
+    else if (eth->h_proto == bpf_htons(ETH_P_IP))
+    {
+        return xdp_router_4to6_func(ctx);
     }
     return XDP_PASS;
 }

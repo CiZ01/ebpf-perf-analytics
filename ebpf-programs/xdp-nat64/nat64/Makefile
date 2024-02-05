@@ -7,20 +7,22 @@ XDP_USER_PROG := $(XDP_PROG_NAME)_user
 
 .PHONY: all clean
 
-all: $(XDP_USER_PROG) $(XDP_KERN_PROG)
+all: build_u build_k
 
-$(XDP_KERN_PROG): $(XDP_PROG_NAME)_kern.c
+run: 
+	./xdp_router_user
+
+build_k: $(XDP_PROG_NAME)_kern.c
 	$(CLANG) \
-	-O1 \
+	-O2 \
 	-g \
 	-Wno-compare-distinct-pointer-types \
 	-target bpf \
-	-lelf -lbfd -lopcodes \
 	-c $< \
-	-o $@
+	-o $(XDP_KERN_PROG)
 
-$(XDP_USER_PROG): $(XDP_PROG_NAME)_user.c
-	$(CC) -g -Wall -O2 common/common_params.c $< -o $@ -lxdp -lbpf
+build_u: $(XDP_PROG_NAME)_user.c
+	$(CC) -g -Wall -O2 common/common_params.c $< -o $(XDP_USER_PROG) -lxdp -lbpf
 
 clean:
 	rm -f $(XDP_KERN_PROG) $(XDP_USER_PROG)

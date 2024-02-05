@@ -26,6 +26,8 @@
 #define AF_INTET6 6
 #endif
 
+
+
 struct icmpv6_pseudo
 {
     struct in6_addr saddr;
@@ -33,7 +35,7 @@ struct icmpv6_pseudo
     __u32 len;
     __u8 padding[3];
     __u8 nh;
-} __attribute__((packed));
+};
 
 static inline int is_6to4(struct ipv6hdr *pseudo_hdr)
 {
@@ -242,7 +244,6 @@ static inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
     __u32 csum_buffer = 0;
     __u16 *buf = (void *)icmph;
 
-#pragma unroll
     for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
     {
         if ((void *)(buf + 1) > data_end)

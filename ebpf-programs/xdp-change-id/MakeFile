@@ -1,0 +1,5 @@
+TARGET := "xdp_cid_kern"
+
+build:
+	clang -g -O2 -Wall -target bpf -c xdp_cid_kern.c -o xdp_cid_kern.o -lopcodes
+
