@@ -4,7 +4,12 @@
 #include <net/if.h>
 #include <sys/resource.h>
 #include <errno.h>
-#include "xdp_cid_skel.h"
+
+#ifdef TRACE
+#include "xdp_cid_kern_trace_skel.h"
+#else
+#include "xdp_cid_kern_skel.h"
+#endif
 
 #define SZ_32K 0x00008000
 
@@ -108,7 +113,11 @@ int main(int argc, char **argv)
 
     int err;
 
-    skel = xdp_cid_kern__open();
+#ifdef TRACE
+    struct xdp_cid_kern_trace *skel = xdp_cid_kern_trace__open();
+#else
+    struct xdp_cid_kern *skel = xdp_cid_kern__open();
+#endif
     if (!skel)
     {
         fprintf(stderr, "Failed to open BPF program: %s\n", strerror(errno));
@@ -123,7 +132,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+#ifdef TRACE
+    err = xdp_cid_kern_trace__load(skel);
+#else
     err = xdp_cid_kern__load(skel);
+#endif
     if (err)
     {
         fprintf(stderr, "Failed to load BPF program: %s\n", strerror(errno));
@@ -173,5 +186,11 @@ int main(int argc, char **argv)
             opts.duration);
 
     free(data_in);
+
+#ifdef TRACE
+    xdp_cid_kern_trace__destroy(skel);
+#else
+    xdp_cid_kern__destroy(skel);
+#endif
     return 0;
 }

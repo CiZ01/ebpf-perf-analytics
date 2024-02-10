@@ -2,13 +2,23 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <linux/if_link.h>
 #include <signal.h>
 
-#include "xdp_cid_skel.h"
+// be sure to use xdp_cid_trace version for this userspace program
+#ifdef TRACE
+#include "xdp_cid_kern_trace_skel.h"
+struct xdp_cid_kern_trace *skel;
+struct perf_buffer *pb;
+#else
+#include "xdp_cid_kern_skel.h"
+
+struct xdp_cid_kern *skel;
+#endif
 
 #define MAX_CNT 100
 
@@ -19,33 +29,19 @@ struct perf_trace_event
     __u32 bytes;
 };
 
-struct perf_trace_event_accumulate
-{
-    __u32 processing_time_ns;
-    __u32 bytes;
-    __u32 run_cnt;
-};
-
-struct xdp_cid_kern *skel;
-struct perf_buffer *pb;
-struct bpf_link *link;
-struct perf_trace_event_accumulate *acc = &((struct perf_trace_event_accumulate){0});
+struct bpf_link *xdp_link;
 
 void cleanup(int sig)
 {
-    if (acc->run_cnt > 0)
-    {
-        printf("Accumulated processing time: %u ns\n", acc->processing_time_ns);
-        printf("Accumulated bytes: %u\n", acc->bytes);
-        printf("Accumulated run count: %u\n", acc->run_cnt);
-
-        printf("Average processing time: %u ns\n", acc->processing_time_ns / acc->run_cnt);
-        printf("Average bytes: %u\n", acc->bytes / acc->run_cnt);
-    }
+#ifdef TRACE
     perf_buffer__free(pb);
-    xdp_cid_kern__destroy(skel);
+    xdp_cid_kern_trace__detach(skel);
+    xdp_cid_kern_trace__destroy(skel);
+#else
     xdp_cid_kern__detach(skel);
-    bpf_link__destroy(link);
+    xdp_cid_kern__destroy(skel);
+#endif
+    bpf_link__destroy(xdp_link);
     printf("Cleaned up and detached BPF program from interface\n");
 }
 
@@ -60,17 +56,6 @@ void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
     tm = localtime(&t);
     strftime(ts, sizeof(ts), "%H:%M:%S", tm);
     printf("%-8s %lld %14u ns %14u bytes\n", ts, e->timestamp, e->processing_time_ns, e->bytes);
-}
-
-void handle_event_accumulate(void *ctx, int cpu, void *data, __u32 data_sz)
-{
-
-    const struct perf_trace_event *e = data;
-    acc->processing_time_ns += e->processing_time_ns;
-    acc->bytes += e->bytes;
-    acc->run_cnt++;
-    printf("Average processing time: %u ns\n", acc->processing_time_ns / acc->run_cnt);
-    printf("Average bytes: %u\n\n", acc->bytes / acc->run_cnt);
 }
 
 void handle_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -97,7 +82,11 @@ int main(int argc, char **argv)
 
     int err;
 
+#ifdef TRACE
+    skel = xdp_cid_kern_trace__open();
+#else
     skel = xdp_cid_kern__open();
+#endif
     if (!skel)
     {
         fprintf(stderr, "Failed to open BPF program: %s\n", strerror(errno));
@@ -113,7 +102,11 @@ int main(int argc, char **argv)
         return 1;
     }
 
+#ifdef TRACE
+    err = xdp_cid_kern_trace__load(skel);
+#else
     err = xdp_cid_kern__load(skel);
+#endif
     if (err)
     {
         fprintf(stderr, "Failed to load BPF program: %s\n", strerror(errno));
@@ -121,8 +114,8 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    link = bpf_program__attach_xdp(skel->progs.xdp_cid_func, ifindex);
-    if (libbpf_get_error(link))
+    xdp_link = bpf_program__attach_xdp(skel->progs.xdp_cid_func, ifindex);
+    if (libbpf_get_error(xdp_link))
     {
         fprintf(stderr, "Failed to attach BPF program to interface: %s\n", strerror(errno));
         cleanup(0);
@@ -131,12 +124,8 @@ int main(int argc, char **argv)
 
     printf("Successfully attached BPF program to interface %s\n", ifname);
 
-    acc->bytes = 0;
-    acc->processing_time_ns = 0;
-    acc->run_cnt = 0;
-
-    pb = perf_buffer__new(bpf_map__fd(skel->maps.output_map), 64, handle_event_accumulate, handle_lost_events, NULL,
-                          NULL);
+#ifdef TRACE
+    pb = perf_buffer__new(bpf_map__fd(skel->maps.output_map), 64, handle_event, handle_lost_events, NULL, NULL);
     err = libbpf_get_error(pb);
     if (err)
     {
@@ -151,9 +140,14 @@ int main(int argc, char **argv)
         ;
     printf("Error polling perf buffer: %d\n", err);
 
+#else
+    printf("Running...\n");
+    while (1)
+    {
+        sleep(1);
+    }
+#endif
     signal(SIGINT, cleanup);
-    signal(SIGKILL, cleanup);
-    signal(SIGTERM, cleanup);
 
     return err != 0;
 }
