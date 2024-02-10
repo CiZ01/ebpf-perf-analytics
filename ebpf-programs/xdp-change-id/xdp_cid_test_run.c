@@ -94,10 +94,36 @@ err_fclose:
 int main(int argc, char **argv)
 {
 
-    if (argc != 4)
+    if (argc < 4)
     {
-        fprintf(stderr, "Usage: %s <ifname> <data_in> <repeats> \n", argv[0]);
+        fprintf(stderr, "Usage: %s <ifname> <data_in> <repeats> [-v, -l] \n", argv[0]);
         return 1;
+    }
+
+    int verbose = 0;
+    int do_load = 0;
+    if (argc == 5)
+    {
+        if (strcmp(argv[4], "-v") == 0)
+        {
+            verbose = 1;
+        }
+        else if (strcmp(argv[4], "-l") == 0)
+        {
+            do_load = 1;
+        }
+    }
+
+    if (argc == 6)
+    {
+        if (strcmp(argv[5], "-v") == 0)
+        {
+            verbose = 1;
+        }
+        else if (strcmp(argv[5], "-l") == 0)
+        {
+            do_load = 1;
+        }
     }
 
     char *ifname = argv[1];
@@ -132,18 +158,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
-#ifdef TRACE
-    err = xdp_cid_kern_trace__load(skel);
-#else
-    err = xdp_cid_kern__load(skel);
-#endif
-    if (err)
+    if (do_load)
     {
-        fprintf(stderr, "Failed to load BPF program: %s\n", strerror(errno));
-        return 1;
+#ifdef TRACE
+        err = xdp_cid_kern_trace__load(skel);
+#else
+        err = xdp_cid_kern__load(skel);
+#endif
+        if (err)
+        {
+            fprintf(stderr, "Failed to load BPF program: %s\n", strerror(errno));
+            return 1;
+        }
     }
-
-    // using bpf_test_run_opts() to test the program
 
     int fd = bpf_program__fd(skel->progs.xdp_cid_func);
     if (fd < 0)
@@ -180,17 +207,26 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("Successfully ran BPF program\n");
-
-    fprintf(stdout, "Return value: %u, duration%s: %uns\n", opts.retval, repeats > 1 ? " (average)" : "",
-            opts.duration);
+    if (verbose)
+    {
+        fprintf(stdout, "Successfully ran BPF program\n");
+        fprintf(stdout, "Return value: %u, duration%s: %uns\n", opts.retval, repeats > 1 ? " (average)" : "",
+                opts.duration);
+    }
+    else
+    {
+        fprintf(stdout, "%u\n", opts.duration);
+        fflush(stdout);
+    }
 
     free(data_in);
 
 #ifdef TRACE
     xdp_cid_kern_trace__destroy(skel);
+    xdp_cid_kern_trace__detach(skel);
 #else
     xdp_cid_kern__destroy(skel);
+    xdp_cid_kern__detach(skel);
 #endif
     return 0;
 }

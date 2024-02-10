@@ -2,13 +2,14 @@ TARGET := xdp_cid_kern
 TARGET_USER := xdp_cid_user
 TARGET_TEST := xdp_cid_test
 
+.SILENT: all
+
 build: $(TARGET) $(TARGET)_skel $(TARGET_USER) $(TARGET_TEST)_run
 
 build_trace: $(TARGET)_trace $(TARGET)_trace_skel $(TARGET_USER)_trace $(TARGET_TEST)_trace_run
 
 all: build build_trace
 
-.SILENT: all
 
 # --------------------- KERNEL SPACE -------------------------------
 $(TARGET): 
@@ -39,11 +40,11 @@ $(TARGET_USER)_trace:
 # ------------------- USER SPACE PROG RUN ----------------------------
 $(TARGET_TEST)_run:
 	@echo "[INFO]: Compiling $(TARGET_TEST)"
-	gcc -g -Wall -O2 -c $(TARGET_TEST)_run.c -o $(TARGET_TEST)_run.o
+	gcc -Wall -g -O2 xdp_cid_test_run.c -o xdp_cid_test_run.o -L../libbpf/src -l:libbpf.a -lelf -lz
 
 $(TARGET_TEST)_trace_run:
 	@echo "[INFO]: Compiling $(TARGET_TEST)"
-	gcc -g -Wall -O2 -c $(TARGET_TEST)_run.c -o $(TARGET_TEST)_trace_run.o -DTRACE=1
+	gcc -Wall -g -O2 xdp_cid_test_run.c -o xdp_cid_test_trace_run.o -L../libbpf/src -l:libbpf.a -lelf -lz -DTRACE=1
 	
 
 clean:
