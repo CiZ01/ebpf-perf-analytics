@@ -1,0 +1,61 @@
+TARGET := xdp_pass_kern
+TARGET_USER := xdp_pass_user
+TARGET_TEST := xdp_pass_test
+
+.SILENT: all
+
+build: $(TARGET) $(TARGET)_skel $(TARGET_USER) $(TARGET_TEST)_run
+
+build_trace: $(TARGET)_trace $(TARGET)_trace_skel $(TARGET_USER)_trace $(TARGET_TEST)_trace_run
+
+all: build build_trace
+
+
+# --------------------- KERNEL SPACE -------------------------------
+$(TARGET): 
+	@echo "[INFO]: Compiling $(TARGET)"
+	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET).o
+
+$(TARGET)_trace:
+	@echo "[INFO]: Compiling $(TARGET)_trace"
+	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET)_trace.o -DTRACE=1
+
+# --------------------- GEN SKELETON -------------------------------
+$(TARGET)_skel:
+	@echo "[INFO]: Generating $(TARGET)_skel"
+	bpftool gen skeleton $(TARGET).o > $(TARGET)_skel.h
+
+$(TARGET)_trace_skel:
+	@echo "[INFO]: Generating $(TARGET)_trace_skel"
+	bpftool gen skeleton $(TARGET)_trace.o > $(TARGET)_trace_skel.h
+
+# --------------------- USER SPACE -------------------------------
+$(TARGET_USER):
+	@echo "[INFO]: Compiling $(TARGET_USER)"
+	gcc -Wall -g -O2 $(TARGET_USER).c -o $(TARGET_USER).o -lbpf  
+
+$(TARGET_USER)_trace:
+	@echo "[INFO]: Compiling $(TARGET_USER)"
+	gcc -Wall -g -O2 $(TARGET_USER).c -o $(TARGET_USER)_trace.o -lbpf -DTRACE=1
+# ------------------- USER SPACE PROG RUN ----------------------------
+$(TARGET_TEST)_run:
+	@echo "[INFO]: Compiling $(TARGET_TEST)"
+	gcc -Wall -g -O2 $(TARGET_TEST)_run.c -o $(TARGET_TEST)_run.o -L../libbpf/src -l:libbpf.a -lelf -lz
+
+$(TARGET_TEST)_trace_run:
+	@echo "[INFO]: Compiling $(TARGET_TEST)"
+	gcc -Wall -g -O2 $(TARGET_TEST)_run.c -o $(TARGET_TEST)_trace_run.o -DTRACE=1 -L../libbpf/src -l:libbpf.a -lelf -lz
+	
+
+clean:
+	rm -f $(TARGET).o \
+		  $(TARGET)_trace.o \
+		  \
+		  $(TARGET)_skel.h \
+		  $(TARGET)_trace_skel.h \
+		  \
+		  $(TARGET_USER).o  \
+		  $(TARGET_USER)_trace.o \
+		  \
+		  $(TARGET_TEST)_run.o \ 
+		  $(TARGET_TEST)_trace_run.o

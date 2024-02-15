@@ -30,6 +30,8 @@ struct perf_trace_event
 };
 
 struct bpf_link *xdp_link;
+int verbose = 0;
+int run_cnt = 0;
 
 void cleanup(int sig)
 {
@@ -48,14 +50,24 @@ void cleanup(int sig)
 void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 {
     const struct perf_trace_event *e = data;
-    struct tm *tm;
-    char ts[32];
-    time_t t;
+    run_cnt++;
+    if (verbose)
+    {
+        struct tm *tm;
+        char ts[32];
+        time_t t;
 
-    time(&t);
-    tm = localtime(&t);
-    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-    printf("%-8s %lld %14u ns %14u bytes\n", ts, e->timestamp, e->processing_time_ns, e->bytes);
+        time(&t);
+        tm = localtime(&t);
+        strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+        printf("%-8s %lld %14u ns %14u bytes\n", ts, e->timestamp, e->processing_time_ns, e->bytes);
+    }
+    else
+    {
+        // just print the processing time
+        fprintf(stdout, "%u \n", e->processing_time_ns);
+        fflush(stdout);
+    }
 }
 
 void handle_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -65,13 +77,35 @@ void handle_lost_events(void *ctx, int cpu, __u64 lost_cnt)
 
 int main(int argc, char **argv)
 {
-    if (argc != 2)
+    if (argc < 2)
     {
-        fprintf(stderr, "Usage: %s <ifname>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <ifname> [ -v | -c <count> ]\n", argv[0]);
         return 1;
     }
 
-    char *ifname = argv[1];
+    char *ifname = "";
+    int count = 0;
+    int opt;
+    while ((opt = getopt(argc, argv, "vc:i:")) != -1)
+        switch (opt)
+        {
+        case 'v':
+            verbose = 1;
+            break;
+        case 'c':
+#ifdef TRACE
+            count = atoi(optarg);
+#else
+            printf("Error: -c options work only in trace mode");
+            return 1;
+#endif
+            break;
+        case 'i':
+            ifname = optarg;
+            break;
+        case '?':
+            fprintf(stderr, "Usage: %s <ifname> [ -v | -c <count> ]\n", argv[0]);
+        }
 
     int ifindex = if_nametoindex(ifname);
     if (ifindex == 0)
@@ -79,7 +113,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "Failed to get ifindex of %s: %s\n", ifname, strerror(errno));
         return 1;
     }
-
     int err;
 
 #ifdef TRACE
@@ -122,8 +155,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("Successfully attached BPF program to interface %s\n", ifname);
+    if (verbose)
+        printf("Successfully attached BPF program to interface %s\n", ifname);
 
+    signal(SIGINT, cleanup);
 #ifdef TRACE
     pb = perf_buffer__new(bpf_map__fd(skel->maps.output_map), 64, handle_event, handle_lost_events, NULL, NULL);
     err = libbpf_get_error(pb);
@@ -135,10 +170,24 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("TIMESTAMP           PKT SIZE            PROCESSING TIME\n");
-    while ((err = perf_buffer__poll(pb, 100)) >= 0)
-        ;
-    printf("Error polling perf buffer: %d\n", err);
+    if (verbose)
+    {
+        printf("TIMESTAMP           PKT SIZE            PROCESSING TIME\n");
+    }
+    else
+    {
+        printf("PROCESSING TIME\n");
+    }
+
+    while (run_cnt < count || count == 0)
+    {
+        err = perf_buffer__poll(pb, 100);
+        if (err < 0)
+        {
+            printf("Error polling perf buffer: %d\n", err);
+            break;
+        }
+    }
 
 #else
     printf("Running...\n");
@@ -147,7 +196,6 @@ int main(int argc, char **argv)
         sleep(1);
     }
 #endif
-    signal(SIGINT, cleanup);
 
     return err != 0;
 }

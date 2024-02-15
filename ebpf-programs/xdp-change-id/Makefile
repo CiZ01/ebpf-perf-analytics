@@ -14,11 +14,11 @@ all: build build_trace
 # --------------------- KERNEL SPACE -------------------------------
 $(TARGET): 
 	@echo "[INFO]: Compiling $(TARGET)"
-	clang -g -Wall -O2 -target bpf -c $(TARGET).c -o $(TARGET).o
+	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET).o
 
 $(TARGET)_trace:
 	@echo "[INFO]: Compiling $(TARGET)_trace"
-	clang -g -Wall -O2 -target bpf -c $(TARGET).c -o $(TARGET)_trace.o -DTRACE=1
+	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET)_trace.o -DTRACE=1
 
 # --------------------- GEN SKELETON -------------------------------
 $(TARGET)_skel:
@@ -40,11 +40,11 @@ $(TARGET_USER)_trace:
 # ------------------- USER SPACE PROG RUN ----------------------------
 $(TARGET_TEST)_run:
 	@echo "[INFO]: Compiling $(TARGET_TEST)"
-	gcc -Wall -g -O2 xdp_cid_test_run.c -o xdp_cid_test_run.o -L../libbpf/src -l:libbpf.a -lelf -lz
+	gcc -Wall -g -O2 $(TARGET_TEST)_run.c -o $(TARGET_TEST)_run.o -L../libbpf/src -l:libbpf.a -lelf -lz
 
 $(TARGET_TEST)_trace_run:
 	@echo "[INFO]: Compiling $(TARGET_TEST)"
-	gcc -Wall -g -O2 xdp_cid_test_run.c -o xdp_cid_test_trace_run.o -L../libbpf/src -l:libbpf.a -lelf -lz -DTRACE=1
+	gcc -Wall -g -O2 $(TARGET_TEST)_run.c -o xdp_cid_test_trace_run.o -DTRACE=1 -L../libbpf/src -l:libbpf.a -lelf -lz
 	
 
 clean:

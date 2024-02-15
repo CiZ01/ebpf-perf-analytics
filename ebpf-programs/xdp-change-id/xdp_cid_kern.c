@@ -14,6 +14,7 @@ static __always_inline __u16 fold_csum(__u32 csum)
     return ~csum;
 }
 
+#define TRACE 1
 #ifdef TRACE
 #define START_TRACE()                                                                                                  \
     struct perf_trace_event __event = {};                                                                              \
@@ -42,8 +43,8 @@ struct perf_trace_event
 #define END_TRACE()                                                                                                    \
     __event.bytes = (__u32)(data_end - data);                                                                          \
     __event.processing_time_ns = bpf_ktime_get_ns() - __event.timestamp;                                               \
-    bpf_perf_event_output(ctx, &output_map, BPF_F_CURRENT_CPU, &__event, sizeof(__event));
-
+    bpf_perf_event_output(ctx, &output_map, BPF_F_CURRENT_CPU, &__event, sizeof(__event));                             \
+    bpf_printk("processing time: %d\n", __event.processing_time_ns);
 #else
 #define START_TRACE()
 #define END_TRACE()
@@ -56,15 +57,17 @@ int xdp_change_id(struct xdp_md *ctx)
 
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
-    bpf_printk("xdp_change_id: %d\n", action);
 
     struct ethhdr *eth = data;
     if (eth + 1 > data_end)
         return XDP_DROP;
 
     // change id icmp packet to 1234
+    bpf_printk("proto: %x", bpf_ntohs(eth->h_proto));
+    bpf_printk("dest: %pM", eth->h_dest);
     if (eth->h_proto == bpf_htons(ETH_P_IP))
     {
+        // bpf_printk("xdp_change_id: %d\n", action);
         struct iphdr *iph = data + sizeof(*eth);
         if (iph + 1 > data_end)
         {
@@ -79,15 +82,21 @@ int xdp_change_id(struct xdp_md *ctx)
                 action = XDP_DROP;
                 goto out;
             }
-            icmph->un.echo.id = bpf_htons(1234);
-/*             icmph->checksum = 0;
-            icmph->checksum = fold_csum(bpf_csum_diff((__be32 *)icmph, sizeof(struct icmphdr), 0, 0, 0));
- */        }
+            // icmph->un.echo.id = bpf_htons(1234);
+            //  icmph->checksum = 0;
+            __u32 checksum = fold_csum(bpf_csum_diff((__be32 *)icmph, sizeof(struct icmphdr), 0, 0, 0));
+            bpf_printk("Done");
+        }
+    }
+    else
+    {
+        action = XDP_DROP;
     }
 
 out:
 
     END_TRACE();
+    bpf_printk("action: %d", action);
     return action;
 }
 
