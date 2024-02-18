@@ -1,0 +1,93 @@
+int xdp_cid_func(struct xdp_md * ctx):
+; return xdp_change_id(ctx);
+   0: (85) call pc+1#bpf_prog_a997b48f125f6491_xdp_change_id
+; return xdp_change_id(ctx);
+   1: (95) exit
+int xdp_change_id(struct xdp_md * ctx):
+; int xdp_change_id(struct xdp_md *ctx)
+   2: (bf) r6 = r1
+; START_TRACE();
+   3: (85) call bpf_ktime_get_ns#205536
+   4: (b7) r8 = 1
+   5: (7b) *(u64 *)(r10 -16) = r0
+; void *data_end = (void *)(long)ctx->data_end;
+   6: (79) r9 = *(u64 *)(r6 +8)
+; void *data = (void *)(long)ctx->data;
+   7: (79) r7 = *(u64 *)(r6 +0)
+; if (eth + 1 > data_end)
+   8: (bf) r1 = r7
+   9: (07) r1 += 14
+; if (eth + 1 > data_end)
+  10: (2d) if r1 > r9 goto pc+58
+  11: (7b) *(u64 *)(r10 -24) = r0
+; if (eth->h_proto == bpf_htons(ETH_P_IP))
+  12: (71) r1 = *(u8 *)(r7 +12)
+  13: (71) r2 = *(u8 *)(r7 +13)
+  14: (67) r2 <<= 8
+  15: (4f) r2 |= r1
+; if (eth->h_proto == bpf_htons(ETH_P_IP))
+  16: (55) if r2 != 0x8 goto pc+27
+; if (iph + 1 > data_end)
+  17: (bf) r1 = r7
+  18: (07) r1 += 34
+; if (iph + 1 > data_end)
+  19: (2d) if r1 > r9 goto pc+24
+; if (iph->protocol == IPPROTO_ICMP)
+  20: (71) r2 = *(u8 *)(r7 +23)
+  21: (b7) r8 = 2
+; if (iph->protocol == IPPROTO_ICMP)
+  22: (55) if r2 != 0x1 goto pc+21
+; if (icmph + 1 > data_end)
+  23: (bf) r2 = r7
+  24: (07) r2 += 42
+  25: (b7) r8 = 1
+; if (icmph + 1 > data_end)
+  26: (2d) if r2 > r9 goto pc+17
+  27: (bf) r8 = r1
+; checksum = fold_csum(bpf_csum_diff((__be32 *)icmph, sizeof(struct icmphdr), 0, 0, 0));
+  28: (b7) r2 = 8
+  29: (b7) r3 = 0
+  30: (b7) r4 = 0
+  31: (b7) r5 = 0
+  32: (85) call bpf_csum_diff#9443344
+; checksum = fold_csum(bpf_csum_diff((__be32 *)icmph, sizeof(struct icmphdr), 0, 0, 0));
+  33: (bf) r1 = r8
+  34: (b7) r2 = 8
+  35: (b7) r3 = 0
+  36: (b7) r4 = 0
+  37: (b7) r5 = 0
+  38: (85) call bpf_csum_diff#9443344
+; bpf_printk("DOne");
+  39: (18) r1 = map[id:46688][0]+0
+  41: (b7) r2 = 5
+  42: (85) call bpf_trace_printk#-91360
+  43: (b7) r8 = 2
+; END_TRACE();
+  44: (1f) r9 -= r7
+  45: (63) *(u32 *)(r10 -4) = r9
+  46: (85) call bpf_ktime_get_ns#205536
+  47: (79) r1 = *(u64 *)(r10 -24)
+  48: (1f) r0 -= r1
+  49: (63) *(u32 *)(r10 -8) = r0
+  50: (bf) r4 = r10
+; 
+  51: (07) r4 += -16
+; END_TRACE();
+  52: (bf) r1 = r6
+  53: (18) r2 = map[id:46686]
+  55: (18) r3 = 0xffffffff
+  57: (b7) r5 = 16
+  58: (85) call bpf_xdp_event_output#9444672
+; END_TRACE();
+  59: (61) r3 = *(u32 *)(r10 -8)
+  60: (18) r1 = map[id:46688][0]+5
+  62: (b7) r2 = 21
+  63: (85) call bpf_trace_printk#-91360
+; bpf_printk("action: %d", action);
+  64: (18) r1 = map[id:46688][0]+26
+  66: (b7) r2 = 11
+  67: (bf) r3 = r8
+  68: (85) call bpf_trace_printk#-91360
+; }
+  69: (bf) r0 = r8
+  70: (95) exit

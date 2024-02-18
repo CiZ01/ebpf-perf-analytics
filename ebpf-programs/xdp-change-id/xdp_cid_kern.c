@@ -9,12 +9,13 @@
 // fold checksum
 static __always_inline __u16 fold_csum(__u32 csum)
 {
-    csum = (csum & 0xffff) + (csum >> 16);
+    csum = (csum & 0xfff) + (csum >> 16);
     csum += csum >> 16;
     return ~csum;
 }
 
-#define TRACE 1
+#define MAX_ICMP_SIZE 1480
+
 #ifdef TRACE
 #define START_TRACE()                                                                                                  \
     struct perf_trace_event __event = {};                                                                              \
@@ -50,6 +51,29 @@ struct perf_trace_event
 #define END_TRACE()
 #endif
 
+static __always_inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
+{
+    __u32 csum_buffer = 0;
+    __u16 *buf = (void *)icmph;
+
+    for (int i = 0; i < MAX_ICMP_SIZE; i += 2)
+    {
+        if ((void *)(buf + 1) > data_end)
+            break;
+        csum_buffer += *buf;
+        buf++;
+    }
+
+    if ((void *)buf + 1 <= data_end)
+    {
+        // In case payload is not 2 bytes aligned
+        csum_buffer += *(__u8 *)buf;
+    }
+
+    __u16 csum = (__u16)csum_buffer + (__u16)(csum_buffer >> 16);
+    return ~csum;
+}
+
 int xdp_change_id(struct xdp_md *ctx)
 {
     START_TRACE();
@@ -57,14 +81,12 @@ int xdp_change_id(struct xdp_md *ctx)
 
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
-
+    __u32 checksum = 0;
     struct ethhdr *eth = data;
     if (eth + 1 > data_end)
         return XDP_DROP;
 
     // change id icmp packet to 1234
-    bpf_printk("proto: %x", bpf_ntohs(eth->h_proto));
-    bpf_printk("dest: %pM", eth->h_dest);
     if (eth->h_proto == bpf_htons(ETH_P_IP))
     {
         // bpf_printk("xdp_change_id: %d\n", action);
@@ -82,10 +104,81 @@ int xdp_change_id(struct xdp_md *ctx)
                 action = XDP_DROP;
                 goto out;
             }
-            // icmph->un.echo.id = bpf_htons(1234);
-            //  icmph->checksum = 0;
-            __u32 checksum = fold_csum(bpf_csum_diff((__be32 *)icmph, sizeof(struct icmphdr), 0, 0, 0));
-            bpf_printk("Done");
+            // (__be32*)icmph->un.echo.id = bpf_htons(1234);
+            //  (__be32*)icmph->checksum = 0;
+
+            // 1.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 2.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 3.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 4.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 5.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 6.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 7.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 8.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 1.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 2.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 3.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 4.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 5.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 6.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 7.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            // 8.
+            checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+            /*             checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+                        // 2.
+                        checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+                        // 3.
+                        checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+                        // 4.
+                        checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+                        // 5.
+                        checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+                        // 6.
+                        checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+                        // 7.
+                        checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+
+                        // 8.
+                        checksum = fold_csum(bpf_csum_diff(0, 0, (__be32 *)icmph, sizeof(icmph), 0));
+             */
+            bpf_printk("DOne");
         }
     }
     else
