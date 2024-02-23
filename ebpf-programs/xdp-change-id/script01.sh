@@ -59,8 +59,6 @@ while getopts "n:o:i:p::d:t:P:" opt; do
     esac
 done
 
-
-
 # add header
 if [ "$trace" -eq 1 ]; then
     echo "#,MY-VALUE,BPF-STAS" > $output
