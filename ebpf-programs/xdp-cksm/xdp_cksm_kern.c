@@ -77,7 +77,7 @@ int xdp_cksm_func(struct xdp_md *ctx)
         // 1
         csum = icmp_cksum(icmph, data_end);
         // 2
-        csum = icmp_cksum(icmph, data_end);
+        /*csum = icmp_cksum(icmph, data_end);
         // 3
         csum = icmp_cksum(icmph, data_end);
         // 1
@@ -89,7 +89,7 @@ int xdp_cksm_func(struct xdp_md *ctx)
         // 1
         csum = icmp_cksum(icmph, data_end);
         // 2
-        csum = icmp_cksum(icmph, data_end);
+        csum = icmp_cksum(icmph, data_end);*/
     }
 
 #ifdef TRACE

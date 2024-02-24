@@ -8,4 +8,15 @@ xdp_router_user
 ebpf-programs/xdp-nat64/nat64/xdp_router_kern.c
 ebpf-programs/xdp-nat64/nat64/xdp_router_user
 perf*
-.gdb*
+*.gdb
+
+#exclude test
+./ebpf-programs/xdp-change-id/tests/
+**/xdp-cksm/tests/
+
+# exclude kmodule build files
+*.mod
+*.ko
+*.order
+*.symvers
+*.cmd
