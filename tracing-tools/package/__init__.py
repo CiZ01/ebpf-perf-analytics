@@ -1,2 +1,0 @@
-__package__ = 'package'
-

@@ -14,14 +14,6 @@ struct my_value_perf
     __u64 value;
 };
 
-/* map of perf event fds, num_cpu * num_metric entries */
-struct
-{
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-    __uint(key_size, sizeof(__u32));
-    __uint(value_size, sizeof(int));
-} events SEC(".maps");
-
 /* readings at fentry */
 struct
 {
@@ -30,6 +22,14 @@ struct
     __uint(value_size, sizeof(struct bpf_perf_event_value));
     __uint(max_entries, 1);
 } fentry_readings SEC(".maps");
+
+/* map of perf event fds, num_cpu * num_metric entries */
+struct
+{
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(int));
+} events SEC(".maps");
 
 /* readings at fentry my value */
 struct
@@ -76,19 +76,9 @@ int BPF_PROG(fentry_XXX)
     __u32 zero = 0;
     long err;
 
-    // my code
-    struct my_value_perf *ptr_my_value;
-
     /* look up before reading, to reduce error */
     ptr = bpf_map_lookup_elem(&fentry_readings, &zero);
     if (!ptr)
-        return 0;
-
-    // faccio la stessa cosa
-    // in pratica recupero il puntatore alla struttura dalla mappa, così
-    // non la devo ricaricaricare quando modifico il valore
-    ptr_my_value = bpf_map_lookup_elem(&my_value_fentry_readings, &zero);
-    if (!ptr_my_value)
         return 0;
 
     err = bpf_perf_event_read_value(&events, key, ptr, sizeof(*ptr));
@@ -96,7 +86,16 @@ int BPF_PROG(fentry_XXX)
         return 0;
 
     // my code
+    struct my_value_perf *ptr_my_value;
+    // faccio la stessa cosa
+    // in pratica recupero il puntatore alla struttura dalla mappa, così
+    // non la devo ricaricaricare quando modifico il valore
+    ptr_my_value = bpf_map_lookup_elem(&my_value_fentry_readings, &zero);
+    if (!ptr_my_value)
+        return 0;
+    // my code
     ptr_my_value->value = bpf_mykperf_read_rdpmc(0);
+
     return 0;
 }
 
@@ -156,12 +155,10 @@ int BPF_PROG(fexit_XXX)
     __u64 *count;
     // my code
     struct my_value_perf my_reading;
-
     /* read all events before updating the maps, to reduce error */
     err = bpf_perf_event_read_value(&events, cpu, &reading, sizeof(reading));
     if (err)
         return 0;
-
     // my code
     my_reading.value = bpf_mykperf_read_rdpmc(0);
 

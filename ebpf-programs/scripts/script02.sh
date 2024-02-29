@@ -2,16 +2,22 @@
 
 # usage
 usage() {
-    echo "Usage: $0 -P <prog> [-n <n_pkt>] [-r <reps>] [-o <output>] [-e <event>] [-p <precision>] [-f] [-t]"
+    echo "Usage: $0 -P <prog> [-n <n_pkt>] [-r <reps>] [-o <output>] [-e <event>] [-p <precision>] [-t]"
     echo "  -P <prog>       Program name"
     echo "  -n <n_pkt>      Number of packets to send"
     echo "  -r <reps>       Number of repetitions"
     echo "  -o <output>     Output file"
     echo "  -e <event>      Perf event"
     echo "  -p <precision>  Print progress every <precision> repetitions"
-    echo "  -f              Force overwrite output file"
     echo "  -t              Trace userspace program"
     exit 1
+}
+
+parse_metric_id() {
+    case $event in
+        "cycles") METRIC_ID=0;;
+        "instructions") METRIC_ID=1;;
+    esac
 }
 
 #check sudo
@@ -27,15 +33,44 @@ kernelspace=
 reps=100
 n_pkt=10000
 output="output.csv"
-event=$event
+event=cycles
 precision=1
 fload=
 trace=0
 
+PROFILER=/home/cizzo/Scrivania/eBPF/ebpf-perf-analytics/tracing-tools/xdp-introspection/xdp-extrospection/fentry.o
+MY_MODULE=mykperf_module
+METRIC_ID=0
+
 cleanup() {
-    kill -INT "$user_pid"
-    rm -f "$perf_tmp" "$userspace_tmp" "$ping_log"
+    echo "Avvio cleanup"
+    kill -INT "$user_pid" || { echo "Error killing userspace"; exit 1; }
+    kill -INT "$profiler_pid" || { echo "Error killing profiler"; exit 1; }
+    rm -f "$profiler_tmp" "$userspace_tmp" "$ping_log"
 }
+
+#check if kernel module is loaded
+if [ -z "$(lsmod | grep -o "$MY_MODULE")" ]; then
+    echo "Kernel module $MY_MODULE not loaded. Load it and try again"
+    exit 1
+fi
+
+#check rdpmc permission flag
+if [ "$(cat /sys/devices/cpu/rdpmc)" -ne 2 ]; then
+    echo "Enable rdpmc by running: echo 2 | sudo tee /sys/devices/cpu/rdpmc"
+    exit 1
+fi
+
+#check bpf-stats
+# if [ ! -z $(sysctl kernel.bpf_stats_enabled | grep -o "[0-9]") ]; then
+#     echo "WARNING: bpf_stats_enabled is set. May add overhead."
+# fi
+
+#check if fentry alias is already in use
+# if [ ! -z "$(type $PROFILER | grep -c "not found")" ]; then
+#     echo "Profiler $PROFILER not found. Add it as an alias or change the PROFILER variable"
+#     exit 1
+# fi
 
 while getopts ":P:r:n:o:e:p:t" opt; do
     case $opt in
@@ -55,6 +90,7 @@ while getopts ":P:r:n:o:e:p:t" opt; do
         ;;
         e)
             event="$OPTARG"
+            parse_metric_id
         ;;
         p)
             precision="$OPTARG"
@@ -92,7 +128,7 @@ if [ -f "$output" ]; then
 fi
 
 # create temp files
-perf_tmp=$(mktemp perf.XXXXXX)
+profiler_tmp=$(mktemp profiler.XXXXXX)
 if [ "$trace" -eq 1 ]; then
     userspace_tmp=$(mktemp user.XXXXXX)
 fi
@@ -109,7 +145,7 @@ else
 fi
 user_pid=$!
 
-trap 'cleanup; exit 1' INT
+trap 'cleanup; exit 0' INT
 
 echo "Retrieving prog id..."
 # while progid != 0
@@ -122,9 +158,9 @@ echo "Program loaded and attached: $prog_id"
 
 # add header
 if [ "$trace" -eq 1 ]; then
-    echo "PERF-STAT, MY-STATS" > "$output"
+    echo "BPFTOOL-STAT $event, MY-BPFTOOL-STAT ,MY-STATS" > "$output"
 else
-    echo "PERF-STAT $event" > "$output"
+    echo "BPFTOOL-STAT $event, MY-BPFTOOL-STAT" > "$output"
 fi
 
 
@@ -134,28 +170,34 @@ for i in $(seq 1 "$reps"); do
         echo "Repetition $i"
     fi
     
-    # start perf
-    perf stat -b "$prog_id" -e "$event" 2> "$perf_tmp" &
-    perf_pid=$!
+    # start profiler
+    $PROFILER -i "$prog_id" -m "$METRIC_ID" > $profiler_tmp &
+    profiler_pid=$!
     
-    sleep 0.5
+    sleep 1
     
     # send ping
     ip netns exec red ping '192.168.0.1' -c "$n_pkt" -f > $ping_log 2>&1
     
-    kill -INT "$perf_pid" || { echo "Error killing perf"; cleanup; exit 1; }
+    kill -INT "$profiler_pid" || { echo "Error killing profiler"; cleanup; exit 1; }
     
-    wait "$perf_pid"
+    #retrieve profiler value
+    profiler_output=$(cat "$profiler_tmp" | sed -nE "s/([0-9]+) $event .* ([0-9]+) my_value.*/\1 \2/p")
     
-    # retrieve perf value
-    perf_value=$(sed -n "/$event/s/^\s*\([0-9.]*\)\s*$event.*$/\1/p" "$perf_tmp")
-    if [ -z "$perf_value" ]; then
-        echo "[ERR] [perf] zero value at repetition $i" >> "$logger"
-        echo "[ERR] [perf] zero value at repetition $i"
+    profiler_value=$(echo "$profiler_output" | awk '{print $1}')
+    if [ -z "$profiler_value" ]; then
+        echo "[ERR] [profiler] zero value at repetition $i" >> "$logger"
+        cat "$profiler_tmp" >> "$logger"
+        echo "[ERR] [profiler] zero value at repetition $i"
     fi
     
-    #remove dots
-    perf_value=$(echo "$perf_value" | tr -d .)
+    #retrieve profiler my value
+    profiler_my_value=$(echo "$profiler_output" | awk '{print $2}')
+    if [ -z "$profiler_my_value" ]; then
+        echo "[ERR] [my profiler] zero value at repetition $i" >> "$logger"
+        cat "$profiler_tmp" >> "$logger"
+        echo "[ERR] [my profiler] zero value at repetition $i"
+    fi
     
     # retrieve userspace value
     if [ "$trace" -eq 1 ]; then
@@ -174,12 +216,12 @@ for i in $(seq 1 "$reps"); do
             echo "[ERR] [usersapce] zero value at repetition $i" >> "$logger"
             echo "[ERR] [userspace] zero value at repetition $i"
         fi
-        echo "$perf_value, $my_value" >> "$output"
+        echo "$profiler_value, $profiler_my_value, $my_value" >> "$output"
         my_value=0
         > "$userspace_tmp"
         
     else
-        echo "$perf_value" >> "$output"
+        echo "$profiler_value, $profiler_my_value" >> "$output"
     fi
     
 done
