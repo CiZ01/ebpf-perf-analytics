@@ -72,7 +72,7 @@ fi
 #     exit 1
 # fi
 
-while getopts ":P:r:n:o:e:p:t" opt; do
+while getopts ":P:r:n:o:e:p:thv" opt; do
     case $opt in
         P)
             prog="$OPTARG"
@@ -103,6 +103,10 @@ while getopts ":P:r:n:o:e:p:t" opt; do
         h)
             usage
         ;;
+        v)
+            verbose=1
+        ;;
+        
         \?)
             echo "Invalid option: -$OPTARG"
             exit 1

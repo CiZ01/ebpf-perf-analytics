@@ -439,7 +439,7 @@ int main(int argc, char **argv)
     profile_obj->rodata->num_metric = num_metric;
 
     // questo mi serve per tenere traccia degli eventi scelti
-    
+
     bpf_map__set_max_entries(profile_obj->maps.events, num_metric * num_cpu);
     bpf_map__set_max_entries(profile_obj->maps.counts, 1);
 

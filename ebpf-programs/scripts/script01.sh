@@ -37,6 +37,8 @@ event=cycles
 precision=1
 fload=
 trace=0
+warning=0
+sampling=0
 
 MY_MODULE=mykperf_module
 METRIC_ID=0
@@ -63,7 +65,7 @@ if [ ! -z "$(sysctl kernel.bpf_stats_enabled)" ]; then
     echo "WARNING: bpf_stats_enabled is set. May add overhead."
 fi
 
-while getopts ":P:r:n:o:e:p:t" opt; do
+while getopts ":P:r:n:o:e:p:htWs" opt; do
     case $opt in
         P)
             prog="$OPTARG"
@@ -87,11 +89,21 @@ while getopts ":P:r:n:o:e:p:t" opt; do
         ;;
         t)
             trace=1
-            userspace="${prog%?????}_user_trace.o"
+            userspace="${prog%?????}_user_rb.o"
             kernelspace="${prog%?????}_kern_trace.o"
         ;;
         h)
             usage
+        ;;
+        W)
+            warning=1
+            # warnig and sampling are mutually exclusive
+            sampling=${!(warning & sampling)}
+        ;;
+        s)
+            sampling=1
+            # warnig and sampling are mutually exclusive
+            warning=${!(warning & sampling)}
         ;;
         \?)
             echo "Invalid option: -$OPTARG"
@@ -148,7 +160,11 @@ echo "Program loaded and attached: $prog_id"
 
 # add header
 if [ "$trace" -eq 1 ]; then
-    echo "PERF-STAT, MY-STATS" > "$output"
+    if  [ "$sampling" -eq 1 ]; then
+        echo "PERF-STAT, MY-STATS, SAMPLES %" > "$output"
+    else
+        echo "PERF-STAT, MY-STATS" > "$output"
+    fi
 else
     echo "PERF-STAT $event" > "$output"
 fi
@@ -164,7 +180,7 @@ for i in $(seq 1 "$reps"); do
     perf stat -b "$prog_id" -e "$event" 2> "$perf_tmp" &
     perf_pid=$!
     
-    sleep 0.5
+    sleep 0.4
     
     # send ping
     ip netns exec red ping '192.168.0.1' -c "$n_pkt" -f > $ping_log 2>&1
@@ -172,6 +188,7 @@ for i in $(seq 1 "$reps"); do
     kill -INT "$perf_pid" || { echo "Error killing perf"; cleanup; exit 1; }
     
     wait "$perf_pid"
+    
     
     # retrieve perf value
     perf_value=$(sed -n "/$event/s/^\s*\([0-9.]*\)\s*$event.*$/\1/p" "$perf_tmp")
@@ -187,21 +204,33 @@ for i in $(seq 1 "$reps"); do
     if [ "$trace" -eq 1 ]; then
         # count lines and check if it's the same as n_pkt
         line_c=$(wc -l "$userspace_tmp" | awk '{print $1}')
-        if [ "$line_c" != "$n_pkt" ]; then
+        if [ "$line_c" != "$n_pkt" ] && [ "$warning" == 1  ]; then
             echo "[ERR] [userspace] wrong number of packets at repetition $i: $line_c" >> "$logger"
             echo "[ERR] [userspace] wrong number of packets at repetition $i: $line_c"
+        fi
+        
+        if [ "$sampling" -eq 1 ]; then
+            samples_per=$(echo "scale=2; $line_c / $n_pkt * 100" | bc)
         fi
         
         #awk didn't work, even with perl didn't work
         while read line; do
             my_value=$((my_value + line))
         done < "$userspace_tmp"
-        if [ -z "$my_value" ]; then
+        if [ -z "$my_value" ] && [ $warning == 1 ]; then
             echo "[ERR] [usersapce] zero value at repetition $i" >> "$logger"
             echo "[ERR] [userspace] zero value at repetition $i"
         fi
-        echo "$perf_value, $my_value" >> "$output"
+        
+        if [ "$sampling" -eq 1 ]; then
+            echo "$perf_value, $my_value, $samples_per" >> "$output"
+        else
+            echo "$perf_value, $my_value" >> "$output"
+        fi
         my_value=0
+        
+        # not necessary to reset samples_per
+        samples_per=0
         > "$userspace_tmp"
         
     else
