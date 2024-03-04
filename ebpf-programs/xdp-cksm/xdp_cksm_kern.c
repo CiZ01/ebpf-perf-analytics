@@ -13,7 +13,7 @@
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
 #ifdef TRACE
-__u64 bpf_mykperf_read_rdpmc(__u8 counter__k, __u32 low__uninit, __u32 high__uninit) __ksym;
+__u64 bpf_mykperf_read_rdpmc(__u8 counter__k) __ksym;
 
 struct event_value
 {
@@ -72,16 +72,19 @@ int xdp_cksm_func(struct xdp_md *ctx)
 #ifdef TRACE
     __u32 low = 0;
     __u32 high = 0;
-    __u64 start, end;
-    __u8 sampled = 0;
+    __u32 low2 = 0;
+    __u32 high2 = 0;
+    __u64 start, end, start2, end2;
+    //__u8 sampled = 0;
 
     // sampling
-    if (UNLIKELY((bpf_get_prandom_u32() & 0x07)))
-    {
-        sampled = 1;
-        // it work only with 0, it's perf that choose the counter
-        start = bpf_mykperf_read_rdpmc(0, low, high);
-    }
+    // if (UNLIKELY((bpf_get_prandom_u32() & 0x07)))
+    //{
+    // sampled = 1;
+    // it work only with 0, it's perf that choose the counter
+    start = bpf_mykperf_read_rdpmc(0);
+    start2 = bpf_mykperf_read_rdpmc(1);
+    //}
 
 #endif
     void *data_end = (void *)(long)ctx->data_end;
@@ -95,7 +98,7 @@ int xdp_cksm_func(struct xdp_md *ctx)
         return XDP_PASS;
     }
 
-    if (iph->protocol == IPPROTO_ICMP)
+    if (iph->protocol == IPPROTO_ICMP && icmph->checksum % 2 == 0)
     {
         volatile __u16 csum;
         // 1
@@ -106,6 +109,7 @@ int xdp_cksm_func(struct xdp_md *ctx)
         csum = icmp_cksum(icmph, data_end);
         // 1
         csum = icmp_cksum(icmph, data_end);
+
         // 2
         /* csum = icmp_cksum(icmph, data_end);
          // 3
@@ -117,20 +121,23 @@ int xdp_cksm_func(struct xdp_md *ctx)
     }
 
 #ifdef TRACE
-    if (UNLIKELY(sampled))
-    {
-        end = bpf_mykperf_read_rdpmc(0, low, high) - start;
-        // struct event_value event = {0};
-        // event.value = end;
-        // bpf_perf_event_output(ctx, &output, BPF_F_CURRENT_CPU, &event, sizeof(event));
-        bpf_ringbuf_output(&ring_output, &end, sizeof(__u64), BPF_RB_FORCE_WAKEUP);
-        /* __u32 key = 0;
-        __u64 *value;
-        value = bpf_map_lookup_elem(&percpu_output, &key);
-        if (value){
-            *value = end;
-        } */
-    }
+    // if (UNLIKELY(sampled))
+    //{
+    end = bpf_mykperf_read_rdpmc(0) - start;
+    end2 = bpf_mykperf_read_rdpmc(1) - start2;
+    bpf_printk("end: %llu, end2: %llu\n", end, end2);
+
+    struct event_value event = {0};
+    event.value = end;
+    bpf_perf_event_output(ctx, &output, BPF_F_CURRENT_CPU, &event, sizeof(event));
+    // bpf_ringbuf_output(&ring_output, &end, sizeof(__u64), BPF_RB_FORCE_WAKEUP);
+    /* __u32 key = 0;
+    __u64 *value;
+    value = bpf_map_lookup_elem(&percpu_output, &key);
+    if (value){
+        *value = end;
+    } */
+    //}
 #endif
     return XDP_PASS;
 }

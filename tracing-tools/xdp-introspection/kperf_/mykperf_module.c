@@ -7,7 +7,7 @@
 static __u64 mykperf_read_rdpmc(__u8 counter__k, __u32 low, __u32 high);
 
 // -------------------- bpf prototypes ------------------------
-__bpf_kfunc __u64 bpf_mykperf_read_rdpmc(__u8 counter__k, __u32 low__uninit, __u32 high__uninit);
+__bpf_kfunc __u64 bpf_mykperf_read_rdpmc(__u8 counter__k);
 
 #define mykperf_rdpmc(counter, low, high)                                                                              \
     __asm__ __volatile__("rdpmc" : "=a"(low), "=d"(high) : "c"(counter));                                              \
@@ -23,9 +23,11 @@ static __u64 mykperf_read_rdpmc(__u8 counter__k, __u32 low, __u32 high)
     return ((__u64)high << 32) | low;
 }
 
-__bpf_kfunc __u64 bpf_mykperf_read_rdpmc(__u8 counter__k, __u32 low__uninit, __u32 high__uninit)
+__bpf_kfunc __u64 bpf_mykperf_read_rdpmc(__u8 counter__k)
 {
-    return mykperf_read_rdpmc(counter__k, low__uninit, high__uninit);
+    __u32 low, high;
+    mykperf_rdpmc(counter__k, low, high);
+    return ((__u64)high << 32) | low;
 }
 
 BTF_SET8_START(bpf_task_set)
