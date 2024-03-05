@@ -1,1 +1,0 @@
-/home/cizzo/FlameGraph/myflame.sh

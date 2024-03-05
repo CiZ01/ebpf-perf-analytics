@@ -3,6 +3,7 @@
 #include <linux/module.h>
 #include <linux/btf.h>
 #include <linux/btf_ids.h>
+#include "mykperf_module.h"
 
 static __u64 mykperf_read_rdpmc(__u8 counter__k, __u32 low, __u32 high);
 
@@ -54,7 +55,7 @@ static int __init mykperf_module_init(void)
 
 static void __exit mykperf_module_exit(void)
 {
-    printk(KERN_INFO "mykperf module removed\n");
+
 }
 
 module_init(mykperf_module_init);

@@ -1,6 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-static const char *__doc__ = "XDP loader\n"
-                             " - Allows selecting BPF program --progname name to XDP-attach to --dev\n";
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,200 +5,328 @@ static const char *__doc__ = "XDP loader\n"
 #include <errno.h>
 #include <getopt.h>
 
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
-
 #include <locale.h>
 #include <unistd.h>
 #include <time.h>
 
+// xdp prog management
+#include <linux/if_link.h>
 #include <linux/bpf.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
-#include <xdp/libxdp.h>
-
+// if_nametoindex
 #include <net/if.h>
 
-#include "../common/readconf.h"
-#include "../common/common_params.h"
+// perf event
+#include <sys/syscall.h>
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
 
-#define FILENAME "xdp_router_kern.o"
-#define PIN_DIR "/sys/fs/bpf/xdp/router64"
-#define PATH_MAX 256
+#include "readconf.h"
 
 #define IP_BOUNDARY_START 0xC0A80901 // 192.168.9.1
 #define IP_BOUNDARY_END 0xC0A809FE   // 192.168.9.254
 
+#define XDP_PROGRAM_PATH "xdp_router_kern.o"
+
 #define CONF_PATH "router.conf"
 
-static const struct option_wrapper long_options[] = {
+struct cfg configs[2];
+int xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
+int verbose;
+int perf_fd;
 
-    {{"load", no_argument, NULL, 'l'}, "load router", false},
-
-    {{"unload", no_argument, NULL, 'u'}, "detach all router from interfaces", false},
-
-    {{0, 0, NULL, 0}, NULL, false}};
-
-Section sections[2];
-int num_sections;
-struct xdp_program *router;
-struct xdp_program **progs;
-char errmsg[256];
-
-static void detach_programs(int signo)
+static int perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int group_fd, unsigned long flags)
 {
-    int curr_ifindex, err;
-    struct xdp_multiprog *mp = {0};
-
-    Section sec = sections[0];
-    for (int i = 0; i < sec.num_interfaces; i++)
-    {
-        curr_ifindex = if_nametoindex(sec.interfaces[i]);
-        if (curr_ifindex == 0)
-        {
-            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        mp = xdp_multiprog__get_from_ifindex(curr_ifindex);
-
-        err = xdp_multiprog__detach(mp);
-        if (err)
-        {
-            fprintf(stderr, "ERROR: Failed to detach program: %s\n", strerror(-err));
-            exit(EXIT_FAILURE);
-        }
-
-        printf("[INFO]: Detached program %s from interface %s\n", sec.section_name, sec.interfaces[i]);
-    }
-
-    xdp_multiprog__close(mp);
-    exit(EXIT_SUCCESS);
+    return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
 }
 
-static void attach_programs()
+static int start_perf()
 {
-    int curr_ifindex, err;
+    struct perf_event_attr attr = {};
 
-    Section sec = sections[0];
-    for (int i = 0; i < sec.num_interfaces; i++)
+    // TODO - map perf event
+    attr.type = PERF_TYPE_HARDWARE;
+    attr.config = PERF_COUNT_HW_CPU_CYCLES;
+    attr.size = sizeof(struct perf_event_attr);
+    attr.exclude_user = 1;
+
+    perf_fd = perf_event_open(&attr, -1, 0, -1, 0);
+    if (perf_fd < 0)
     {
-        curr_ifindex = if_nametoindex(sec.interfaces[i]);
-        if (curr_ifindex == 0)
-        {
-            fprintf(stderr, "ERROR: Failed to get ifindex of interface %s: %s\n", sec.interfaces[i], strerror(errno));
-            exit(EXIT_FAILURE);
-        }
-
-        err = xdp_program__attach(router, curr_ifindex, XDP_MODE_SKB, 0);
-        if (err)
-        {
-            libbpf_strerror(err, errmsg, sizeof(errmsg));
-            fprintf(stderr, "ERROR: Failed to attach %s program: %s\n", sec.section_name, errmsg);
-            detach_programs(0);
-            exit(EXIT_FAILURE);
-        }
-
-        // TODO ping program (???)
-        // xdp_program__pin(prog_6to4, NULL);
-
-        printf("[INFO]: Attached program %s to interface %s\n", sec.section_name, sec.interfaces[i]);
-    }
-}
-
-static int prog_info(int fd)
-{
-    struct bpf_prog_info info = {};
-    union bpf_attr attr;
-
-    int err;
-
-    memset(&attr, 0, sizeof(attr));
-    attr.info.bpf_fd = fd;
-    attr.info.info_len = sizeof(info);
-    attr.info.info = (__u64)&info;
-
-    err = bpf_obj_get_info_by_fd(fd, &info, &attr.info.info_len);
-    if (err < 0)
-    {
+        fprintf(stderr, "[ERR]: perf_event_open failed\n");
         return -1;
     }
 
-    printf("[INFO]: %d run_cnt: ", fd);
-
-    while (1)
+    // enable perf event
+    if (ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, 0))
     {
-        printf("\r%lld\n", info.run_cnt);
-        sleep(1);
+        fprintf(stderr, "[ERR]: ioctl failed\n");
+        return -1;
     }
-    printf("\n");
     return 0;
 }
 
-int main(int argc, char **argv)
+void usage(void)
 {
-    // parse command line args
-    struct config cfg;
-    parse_cmdline_args(argc, argv, long_options, &cfg, __doc__);
+    printf("Usage: xdp_router_user [-m mode] [-v] [-h]\n");
+    printf("  -m mode: xdp mode (skb, native)\n");
+    printf("  -v: verbose, print perfomance stat\n");
+    printf("  -h: help\n");
+}
 
-    // read config file
+static void int_exit(int sig)
+{
+    __u32 curr_prog_id = 0;
+
+    fprintf(stdout, "[INFO]: Detaching program...\n");
+
+    for (int i_cfg = 0; i_cfg < 2; i_cfg++)
+    {
+        for (int i_if = 0; i_if < configs[i_cfg].num_interfaces; i_if++)
+        {
+            int ifindex = if_nametoindex(configs[i_cfg].interfaces[i_if]);
+            if (ifindex == 0)
+            {
+                printf("[ERR]: getting ifindex during detaching\n");
+                exit(1);
+            }
+
+            // get in current prog id the xdp program attached to the interface
+            if (bpf_xdp_query_id(ifindex, xdp_flags, &curr_prog_id))
+            {
+                printf("[ERR]: bpf_xdp_query_id failed\n");
+                exit(1);
+            }
+
+            // check if the current prog id is the same as the one we are trying to remove
+            if (bpf_xdp_detach(ifindex, xdp_flags, NULL))
+            {
+                printf("[ERR]: bpf_xdp_detach failed\n");
+                exit(1);
+            }
+        }
+    }
+    close(perf_fd);
+    fprintf(stdout, "[INFO]: Done \n");
+    exit(0);
+}
+
+static int attach_prog(struct cfg *cfg, struct bpf_program *prog)
+{
     int err;
-    err = readconf(CONF_PATH, sections, &num_sections);
-    if (err < 0)
+    int ifindex;
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
+    int prog_fd;
+
+    // get prog fd
+    prog_fd = bpf_program__fd(prog);
+    if (prog_fd < 0)
     {
-        fprintf(stderr, "ERROR: Failed to read config file: %s\n", strerror(-err));
-        exit(EXIT_FAILURE);
+        fprintf(stderr, "[ERR]: retrieving prog fd\n");
+        return 1;
     }
 
-    // load programs
-    router = xdp_program__open_file(FILENAME, sections[0].section_name, NULL);
-    if (libxdp_get_error(router) < 0)
+    for (int i = 0; i < cfg->num_interfaces; i++)
     {
-        fprintf(stderr, "ERROR: Failed to open program file: %ld\n", libxdp_get_error(router));
-        exit(EXIT_FAILURE);
+        ifindex = if_nametoindex(cfg->interfaces[i]);
+        if (ifindex == 0)
+        {
+            fprintf(stderr, "[ERR]: getting ifindex - ifname: %s \n", cfg->interfaces[i]);
+            return 1;
+        }
+
+        // attach prog
+        if (bpf_xdp_attach(ifindex, prog_fd, xdp_flags, NULL) < 0)
+        {
+            fprintf(stderr, "[ERR]: attaching program - ifname: %s \n", cfg->interfaces[i]);
+            return 1;
+        }
     }
 
-    // unload program
-    if (cfg.unload)
+    // get prog id
+    err = bpf_prog_get_info_by_fd(prog_fd, &info, &info_len);
+    if (err)
     {
-        detach_programs(0);
+        printf("[ERR]: can't get prog info - %s\n", strerror(errno));
+        return 1;
     }
-    attach_programs();
+    cfg->prog_id = info.id;
+    return 0;
+}
 
-    // init ipv4_cnt map
-    int map_fd;
+static int handle_event(void *ctx, void *data, size_t len)
+{
+    __u64 *sample = data;
 
-    map_fd = bpf_object__find_map_fd_by_name(xdp_program__bpf_obj(router), "ip4_cnt");
-    if (map_fd < 0)
+    struct tm *tm;
+    char ts[32];
+    time_t t;
+
+    time(&t);
+    tm = localtime(&t);
+    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    printf("%-8s %llu \n", ts, *sample);
+    return 0;
+}
+
+static void poll_stats(unsigned int map_fd, unsigned int kill_after_s)
+{
+    int err;
+    struct ring_buffer *rb;
+
+    rb = ring_buffer__new(map_fd, handle_event, NULL, NULL);
+    err = libbpf_get_error(rb);
+    if (err)
     {
-        fprintf(stderr, "ERROR: Failed to get map: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
+        rb = NULL;
+        fprintf(stderr, "failed to open ring buffer: %d\n", err);
+        int_exit(0);
+    }
+
+    while (ring_buffer__poll(rb, 1000) >= 0)
+    {
+        sleep(1);
+    }
+}
+
+int main(int arg, char **argv)
+{
+    int map_ip4_cnt_fd, opt;
+    int rb_map_fd = -1;
+    struct bpf_program *prog;
+    struct bpf_object *obj;
+    int err;
+    int num_configs;
+
+    err = readconfig(CONF_PATH, configs, &num_configs);
+    if (err)
+    {
+        fprintf(stderr, "[ERR]: reading configuration file\n");
+        return 1;
+    }
+
+    // retrieve opt
+    while ((opt = getopt(arg, argv, ":m:vh")) != -1)
+    {
+        switch (opt)
+        {
+        // choosen xdp mode
+        case 'm':
+            if (strcmp(optarg, "skb") == 0)
+            {
+                xdp_flags |= XDP_FLAGS_SKB_MODE;
+            }
+            else if (strcmp(optarg, "native") == 0)
+            {
+                xdp_flags |= XDP_FLAGS_DRV_MODE;
+            }
+            else
+            {
+                fprintf(stderr, "Invalid xdp mode\n");
+                return 1;
+            }
+            break;
+        case 'v':
+            verbose = 1;
+            break;
+        case 'h':
+            usage();
+            return 0;
+        default:
+            fprintf(stderr, "Usage: %s\n", argv[0]);
+            return 1;
+        }
+    }
+
+    // get obj
+    obj = bpf_object__open_file(XDP_PROGRAM_PATH, NULL);
+    if (libbpf_get_error(obj))
+        return 1;
+
+    bpf_object__for_each_program(prog, obj)
+    {
+        err = bpf_program__set_type(prog, BPF_PROG_TYPE_XDP);
+        if (err)
+        {
+            fprintf(stderr, "[ERR]: setting program type\n");
+            return 1;
+        }
+    }
+
+    // load obj
+    err = bpf_object__load(obj);
+    if (err)
+    {
+        fprintf(stderr, "[ERR]: loading object\n");
+        return 1;
+    }
+
+    fprintf(stdout, "[INFO]: Loaded object...\n");
+
+    // retrieve prog later
+
+    // set ipcnt map
+    map_ip4_cnt_fd = bpf_object__find_map_fd_by_name(obj, "ip4_cnt");
+    if (map_ip4_cnt_fd < 0)
+    {
+        fprintf(stderr, "[ERR]: finding map\n");
+        return 1;
     }
 
     int key = 0;
     int value = IP_BOUNDARY_START;
-    err = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
-    if (err < 0)
+    err = bpf_map_update_elem(map_ip4_cnt_fd, &key, &value, BPF_ANY);
+    if (err)
     {
-        fprintf(stderr, "ERROR: Failed to update map: %s\n", strerror(errno));
-        exit(EXIT_FAILURE);
+        fprintf(stderr, "[ERR]: updating map\n");
+        return 1;
     }
 
-    printf("[INFO]: Running...\n");
-    fflush(stdout);
-
-    signal(SIGINT, detach_programs);
-    signal(SIGTERM, detach_programs);
-
-    err = prog_info(xdp_program__fd(router));
-    if (err < 0)
+    // get ring buffer if verbose
+    if (verbose)
     {
-        fprintf(stderr, "ERROR: Failed to get program info: %s\n", strerror(errno));
-        detach_programs(0);
+        rb_map_fd = bpf_object__find_map_fd_by_name(obj, "ring_output");
+        if (rb_map_fd < 0)
+        {
+            fprintf(stderr, "[ERR]: finding map\n");
+            return 1;
+        }
+    }
 
-        exit(EXIT_FAILURE);
+    // set trap for ctrl+c
+    signal(SIGINT, int_exit);
+    signal(SIGTERM, int_exit);
+
+    int i_prog = 0;
+    bpf_object__for_each_program(prog, obj)
+    {
+        err = attach_prog(&configs[i_prog], prog);
+        if (err)
+        {
+            int_exit(0);
+            return 1;
+        }
+        i_prog++;
+    }
+
+    fprintf(stdout, "[INFO]: Running... \n Press Ctrl+C to stop\n");
+    if (verbose && rb_map_fd > 0)
+    {
+        // start perf before polling
+        err = start_perf(); // perf fd will be freed during int_exit
+        if (err)
+        {
+            int_exit(0);
+            return 1;
+        }
+        poll_stats(rb_map_fd, 0);
+    }
+    else
+    {
+        pause();
     }
 
     return 0;

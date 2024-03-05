@@ -98,7 +98,7 @@ int xdp_cksm_func(struct xdp_md *ctx)
         return XDP_PASS;
     }
 
-    if (iph->protocol == IPPROTO_ICMP && icmph->checksum % 2 == 0)
+    if (iph->protocol == IPPROTO_ICMP)
     {
         volatile __u16 csum;
         // 1

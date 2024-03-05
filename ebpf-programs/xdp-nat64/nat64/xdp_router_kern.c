@@ -11,11 +11,13 @@
 #include <linux/icmp.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-
+#include "../../../tracing-tools/xdp-introspection/kperf_/mykperf_module.h"
 #include "nat_helpers.h"
 
 #define IP_BOUNDARY_START 0xc0a80901 // 192.168.9.1
 #define IP_BOUNDARY_END 0xc0a809fe   // 192.168.9.254
+
+__u64 bpf_mykperf_read_rdpmc(__u8 counter__k) __ksym;
 
 struct ipv6_addr32
 {
@@ -28,7 +30,7 @@ struct
     __type(key, __u32);
     __type(value, struct ipv6_addr32);
     __uint(max_entries, 256);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
+
 } nat_4to6 SEC(".maps");
 
 struct
@@ -37,7 +39,6 @@ struct
     __type(key, struct ipv6_addr32);
     __type(value, __u32);
     __uint(max_entries, 256);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } nat_6to4 SEC(".maps");
 
 struct
@@ -46,8 +47,9 @@ struct
     __type(key, __u32);
     __type(value, __u32);
     __uint(max_entries, 1);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } ip4_cnt SEC(".maps");
+
+BPF_MYKPERF_INIT_TRACE();
 
 static inline int free_ip_4to6(__u32 ip)
 {
@@ -138,6 +140,7 @@ static inline int search_ipv6_from_ipv4(__u32 ip, __be32 *ipv6_addr)
     return -1;
 }
 
+SEC("xdp_router_6to4")
 int xdp_router_6to4_func(struct xdp_md *ctx)
 {
 
@@ -376,8 +379,10 @@ forward:
     return XDP_PASS;
 }
 
+SEC("xdp_router_4to6")
 int xdp_router_4to6_func(struct xdp_md *ctx)
 {
+    BPF_MYKPERF_START_TRACE(0);
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
 
@@ -447,9 +452,9 @@ int xdp_router_4to6_func(struct xdp_md *ctx)
         dst_hdr.saddr.in6_u.u6_addr32[0] = bpf_htonl(TRANSLATE_PREFIX);
         dst_hdr.saddr.in6_u.u6_addr32[3] = iph->saddr;
 
-        bpf_printk("[IPV4]: IPV6 ASSIGNED: %pI6", &dst_hdr.saddr.s6_addr32);
-        bpf_printk("[IPV4]: IPV6 DEST: %pI6", &dst_hdr.daddr.s6_addr32);
-
+        /*         bpf_printk("[IPV4]: IPV6 ASSIGNED: %pI6", &dst_hdr.saddr.s6_addr32);
+                bpf_printk("[IPV4]: IPV6 DEST: %pI6", &dst_hdr.daddr.s6_addr32);
+         */
         dst_hdr.nexthdr = iph->protocol;
         dst_hdr.hop_limit = iph->ttl;
         dst_hdr.priority = (iph->tos & 0x70) >> 4;
@@ -573,7 +578,7 @@ forward:
 
         action = bpf_redirect(fib_params.ifindex, 0);
 
-        bpf_printk("[IPV4]: ACTION: %d", action);
+        BPF_MYKPERF_END_TRACE(0);
         return action;
     case BPF_FIB_LKUP_RET_BLACKHOLE:   /* dest is blackholed; can be dropped */
     case BPF_FIB_LKUP_RET_UNREACHABLE: /* dest is unreachable; can be dropped */
@@ -590,29 +595,7 @@ forward:
         bpf_printk("[IPV4]: ERROR: %d", rc);
         return XDP_PASS;
     }
-    return XDP_PASS;
-}
 
-SEC("xdp_router")
-int xdp_router_func(struct xdp_md *ctx)
-{
-    void *data = (void *)(long)ctx->data;
-    void *data_end = (void *)(long)ctx->data_end;
-    struct ethhdr *eth = data;
-
-    __u64 nh_off = sizeof(*eth);
-
-    if (data + nh_off > data_end)
-        return XDP_DROP;
-
-    if (eth->h_proto == bpf_htons(ETH_P_IPV6))
-    {
-        return xdp_router_6to4_func(ctx);
-    }
-    else if (eth->h_proto == bpf_htons(ETH_P_IP))
-    {
-        return xdp_router_4to6_func(ctx);
-    }
     return XDP_PASS;
 }
 

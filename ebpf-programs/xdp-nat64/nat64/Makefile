@@ -3,16 +3,22 @@ CLANG := clang
 
 XDP_PROG_NAME := xdp_router
 XDP_KERN_PROG := $(XDP_PROG_NAME)_kern.o
-XDP_USER_PROG := $(XDP_PROG_NAME)_user
+XDP_USER_PROG := $(XDP_PROG_NAME)_user.o
+
+KHEADER :=  ../../../tracing-tools/xdp-introspection/kperf_/mykperf_module.h
+COMMON_DIR := ../../common
 
 .PHONY: all clean
+
+.SILENT: build_u build_k
 
 all: build_u build_k
 
 run: 
-	./xdp_router_user
+	./$(XDP_USER_PROG).o
 
 build_k: $(XDP_PROG_NAME)_kern.c
+	@echo "Building XDP program"
 	$(CLANG) \
 	-O2 \
 	-g \
@@ -22,7 +28,8 @@ build_k: $(XDP_PROG_NAME)_kern.c
 	-o $(XDP_KERN_PROG)
 
 build_u: $(XDP_PROG_NAME)_user.c
-	$(CC) -g -Wall -O2 common/common_params.c $< -o $(XDP_USER_PROG) -lxdp -lbpf
+	@echo "Building user program"
+	$(CC) -g -Wall -O2 $< -o $(XDP_USER_PROG) -lbpf
 
 clean:
 	rm -f $(XDP_KERN_PROG) $(XDP_USER_PROG)
