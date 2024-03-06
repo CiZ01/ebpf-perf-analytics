@@ -55,7 +55,7 @@ static int __init mykperf_module_init(void)
 
 static void __exit mykperf_module_exit(void)
 {
-
+    pr_info("kernel module detached\n");
 }
 
 module_init(mykperf_module_init);

@@ -1,11 +1,14 @@
 TARGET := xdp_cksm_kern
 TARGET_USER := xdp_cksm_user
+KHEADER:= ../../tracing-tools/xdp-introspection/kperf_
 
 .SILENT: all
+.PHONY: all build build_trace
+
 
 build: $(TARGET) $(TARGET)_skel $(TARGET_USER)
 
-build_trace: $(TARGET)_trace $(TARGET)_trace_skel $(TARGET_USER)_trace $(TARGET_USER)_rb $(TARGET_USER)_percpu
+build_trace: $(TARGET)_trace $(TARGET)_trace_skel $(TARGET_USER)_rb #$(TARGET_USER)_percpu $(TARGET_USER)_trace don't compile them, now I use ringbuffer
 
 all: build build_trace
 
@@ -13,11 +16,11 @@ all: build build_trace
 # --------------------- KERNEL SPACE -------------------------------
 $(TARGET): 
 	@echo "[INFO]: Compiling $(TARGET)"
-	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET).o
+	clang -g -Wno-compare-distinct-pointer-types -O2 -I$(KHEADER) -target bpf -c $(TARGET).c -o $(TARGET).o
 
 $(TARGET)_trace:
 	@echo "[INFO]: Compiling $(TARGET)_trace"
-	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET)_trace.o -DTRACE=1
+	clang -g -Wno-compare-distinct-pointer-types -O2 -I$(KHEADER) -target bpf -c $(TARGET).c -o $(TARGET)_trace.o -DTRACE=1
 
 # --------------------- GEN SKELETON -------------------------------
 $(TARGET)_skel:
@@ -40,7 +43,7 @@ $(TARGET_USER)_trace:
 # --------------------- RING BUFFER -------------------------------
 $(TARGET_USER)_rb:
 	@echo "[INFO]: Compiling $(TARGET_USER)_rb"
-	gcc -Wall -g -O2 $(TARGET_USER)_rb.c -o $(TARGET_USER)_rb.o -lbpf -DTRACE=1
+	gcc -Wall -g -O2 -I$(KHEADER) $(TARGET_USER)_rb.c -o $(TARGET_USER)_rb.o -lbpf -DTRACE=1
 
 # --------------------- PERCPU ARRAY -------------------------------
 $(TARGET_USER)_percpu:
@@ -57,3 +60,5 @@ clean:
 		  \
 		  $(TARGET_USER).o  \
 		  $(TARGET_USER)_trace.o \
+		  $(TARGET_USER)_rb.o \
+		  $(TARGET_USER)_percpu.o

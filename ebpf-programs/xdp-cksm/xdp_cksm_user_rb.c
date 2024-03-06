@@ -9,8 +9,15 @@
 #include <linux/if_link.h>
 #include <signal.h>
 
+struct record
+{
+    char name[16];
+    __u64 value;
+};
+
 // be sure to use xdp_cksm_trace version for this userspace program
 #ifdef TRACE
+
 #include "xdp_cksm_kern_trace_skel.h"
 struct xdp_cksm_kern_trace *skel;
 struct ring_buffer *rb;
@@ -19,11 +26,6 @@ struct ring_buffer *rb;
 
 struct xdp_cksm_kern *skel;
 #endif
-
-struct perf_event
-{
-    __u64 value;
-};
 
 struct bpf_link *xdp_link;
 int verbose = 0;
@@ -44,7 +46,7 @@ void cleanup(int sig)
 
 int handle_event(void *ctx, void *data, __u64 data_sz)
 {
-    __u64* sample = data;
+    struct record *sample = data;
     if (verbose)
     {
         struct tm *tm;
@@ -54,17 +56,16 @@ int handle_event(void *ctx, void *data, __u64 data_sz)
         time(&t);
         tm = localtime(&t);
         strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-        printf("%-8s %llu \n", ts, *sample);
+        printf("%-8s %s: %llu \n", ts, sample->name, sample->value);
     }
     else
     {
         // just print the processing time
-        fprintf(stdout, "%llu \n",*sample);
+        fprintf(stdout, "%s: %llu \n", sample->name, sample->value);
         fflush(stdout);
     }
-	return 0;
+    return 0;
 }
-
 
 int main(int argc, char **argv)
 {
@@ -160,7 +161,7 @@ int main(int argc, char **argv)
     while (ring_buffer__poll(rb, 1000) >= 0)
     {
     }
-	
+
 #else
     printf("Running...\n");
     while (1)

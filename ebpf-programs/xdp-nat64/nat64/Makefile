@@ -5,7 +5,7 @@ XDP_PROG_NAME := xdp_router
 XDP_KERN_PROG := $(XDP_PROG_NAME)_kern.o
 XDP_USER_PROG := $(XDP_PROG_NAME)_user.o
 
-KHEADER :=  ../../../tracing-tools/xdp-introspection/kperf_/mykperf_module.h
+KHEADER :=  ../../../tracing-tools/xdp-introspection/kperf_
 COMMON_DIR := ../../common
 
 .PHONY: all clean
@@ -23,6 +23,7 @@ build_k: $(XDP_PROG_NAME)_kern.c
 	-O2 \
 	-g \
 	-Wno-compare-distinct-pointer-types \
+	-I$(KHEADER) \
 	-target bpf \
 	-c $< \
 	-o $(XDP_KERN_PROG)

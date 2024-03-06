@@ -11,7 +11,7 @@
 #include <linux/icmp.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include "../../../tracing-tools/xdp-introspection/kperf_/mykperf_module.h"
+#include "mykperf_module.h"
 #include "nat_helpers.h"
 
 #define IP_BOUNDARY_START 0xc0a80901 // 192.168.9.1
