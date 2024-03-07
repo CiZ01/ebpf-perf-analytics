@@ -15,6 +15,7 @@ ebpf-programs/loader/loader
 #exclude test
 ./ebpf-programs/xdp-change-id/tests/
 **/xdp-cksm/tests/*
+**/xdp-change-id/tests/test*/
 **/tests/*
 
 # exclude kmodule build files
