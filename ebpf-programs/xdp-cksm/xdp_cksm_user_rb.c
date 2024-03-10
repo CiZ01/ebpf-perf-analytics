@@ -44,7 +44,7 @@ void cleanup(int sig)
     printf("Cleaned up and detached BPF program from interface\n");
 }
 
-int handle_event(void *ctx, void *data, __u64 data_sz)
+int handle_event(void *ctx, void *data, size_t data_sz)
 {
     struct record *sample = data;
     if (verbose)

@@ -27,13 +27,22 @@
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define MAX_METRICS 8
+#define MAX_MEASUREMENT 16
+
+struct section_stats
+{
+    __u64 acc_value;
+    char name[16];
+    // I don't need type counter, this struct is used inside `profile_metric`
+};
+
 // metrics definition
 struct profile_metric
 {
     const char *name;
     // unused
     // struct bpf_perf_event_value val;
-    unsigned long long acc;
+    struct section_stats *acc_persection;
     struct perf_event_attr attr;
     bool selected;
 
@@ -43,6 +52,7 @@ struct profile_metric
     const float ratio_mul;
 } metrics[] = {
     {
+        // cycles
         .name = "cycles",
         .attr =
             {
@@ -52,6 +62,7 @@ struct profile_metric
             },
     },
     {
+        // instructions
         .name = "instructions",
         .attr =
             {
@@ -63,7 +74,62 @@ struct profile_metric
         .ratio_desc = "insns per cycle",
         .ratio_mul = 1.0,
     },
+    {
+        // branch misses
+        .name = "branch-misses",
+        .attr =
+            {
+                .type = PERF_TYPE_HARDWARE,
+                .config = PERF_COUNT_HW_BRANCH_MISSES,
+                .exclude_user = 1,
+            },
+        .ratio_metric = 1,
+        .ratio_desc = "branch-misses per cycle",
+        .ratio_mul = 1.0,
+    },
+    {
+        // cache misses
+        .name = "cache-misses",
+        .attr =
+            {
+                .type = PERF_TYPE_HARDWARE,
+                .config = PERF_COUNT_HW_CACHE_MISSES,
+                .exclude_user = 1,
+            },
+        .ratio_metric = 1,
+        .ratio_desc = "cache-misses per cycle",
+        .ratio_mul = 1.0,
+    },
+    {
+        // L1-dcache-load-misses
+        .name = "L1-dcache-load-misses",
+        .attr =
+            {
+                .type = PERF_TYPE_HW_CACHE,
+                .config = (PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16)),
+                .exclude_user = 1,
+            },
+        .ratio_metric = 1,
+        .ratio_desc = "L1-dcache-load-misses per cycle",
+        .ratio_mul = 1.0,
+    },
+    {
+        // LLC-load-misses
+        .name = "LLC-load-misses",
+        .attr =
+            {
+                .type = PERF_TYPE_HW_CACHE,
+                .config = (PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16)),
+                .exclude_user = 1,
+            },
+        .ratio_metric = 1,
+        .ratio_desc = "LLC-load-misses per cycle",
+        .ratio_mul = 1.0,
+    },
 };
+
 int xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
 int verbose;
 int perf_fd;
@@ -74,6 +140,10 @@ int prog_id;
 int n_cpus;
 int *perf_event_fds;
 
+// output file
+FILE *output_file;
+char *output_filename;
+
 struct profile_metric selected_metrics[MAX_METRICS];
 int selected_metrics_cnt;
 
@@ -83,16 +153,28 @@ int accumulate;
 // int acc_period;
 // int run_cnt; not work, I don't know how to count runs
 
-void usage(void)
+void usage()
 {
-    printf("Usage: loader-stats [OPTS]\n");
-    printf("OPTS:\n");
-    printf("  -i <ifname>      : interface name\n");
-    printf("  -f <filename>    : bpf object file\n");
-    printf("  -m <mode>        : xdp mode (skb, native)\n");
-    printf("  -e <metrics>     : comma separated list of metrics to profile\n");
-    printf("  -P <progsec>     : program section\n");
-    printf("  -v               : verbose\n");
+    printf("Usage: loader-stats -f <filename> -i <ifname> -m <mode> -P <progsec> -e <metrics> -a -o <output_filename> "
+           "-v -h\n");
+    printf("  -f <filename>      : BPF object file\n");
+    printf("  -i <ifname>        : Interface name\n");
+    printf("  -m <mode>          : xdp mode (skb, native)\n");
+    printf("  -P <progsec>       : Program section name\n");
+    printf("  -e <metrics>       : Comma separated list of metrics\n");
+    printf("  -a                 : Accumulate stats\n");
+    printf("  -o <output_filename> : Output filename\n");
+    printf("  -v                 : Verbose\n");
+    printf("  -h                 : Print this help\n");
+}
+
+void supported_metrics()
+{
+    printf("Supported metrics:\n");
+    for (int i = 0; i < ARRAY_SIZE(metrics); i++)
+    {
+        printf("  %s\n", metrics[i].name);
+    }
 }
 
 static int perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int group_fd, unsigned long flags)
@@ -131,6 +213,32 @@ static int start_perf(int n_cpus)
     return 0;
 }
 
+static void print_accumulated_stats()
+{
+    // set locale to print numbers with dot as thousands separator
+    setlocale(LC_NUMERIC, "");
+
+    fprintf(stdout, "\nAccumulated stats\n\n");
+    for (int i = 0; i < selected_metrics_cnt; i++)
+    {
+        fprintf(stdout, "%s\n", selected_metrics[i].name);
+        for (int s = 0; s < MAX_MEASUREMENT; s++)
+        {
+            if (strlen(selected_metrics[i].acc_persection[s].name) > 0)
+            {
+                fprintf(stdout, "    %s: %'llu\n\n", selected_metrics[i].acc_persection[s].name,
+                        selected_metrics[i].acc_persection[s].acc_value);
+            }
+            else
+            {
+                // here we can break the loop if we find a null section,
+                // because the next sections will be null too
+                break;
+            }
+        }
+    }
+}
+
 static void int_exit(int sig)
 {
     for (int i = 0; i < (selected_metrics_cnt * n_cpus); i++)
@@ -140,16 +248,20 @@ static void int_exit(int sig)
     }
     free(perf_event_fds);
 
+    // close output file
+    if (output_file)
+        fclose(output_file);
+
     // print accumulated stats
     if (accumulate)
     {
-        // set locale to print numbers with dot as thousands separator
-        setlocale(LC_NUMERIC, "");
-        fprintf(stdout, "Accumulated stats:\n");
-        for (int i = 0; i < selected_metrics_cnt; i++)
-        {
-            fprintf(stdout, "       %s: %'llu\n", selected_metrics[i].name, selected_metrics[i].acc);
-        }
+        print_accumulated_stats();
+    }
+
+    // after read, free acc_persection
+    for (int i = 0; i < selected_metrics_cnt; i++)
+    {
+        free(selected_metrics[i].acc_persection);
     }
 
     fprintf(stdout, "[INFO]: Detaching program...\n");
@@ -179,21 +291,44 @@ static void int_exit(int sig)
 }
 
 // accumulate stats
-int accumulate_stats(void *data)
+void accumulate_stats(void *data)
 {
     struct record *sample = data;
-    // for now we accumulate value in metric struct and print it every acc_period
-    // as we say before, the order of the metrics is important
-    selected_metrics[sample->type_counter].acc += sample->value;
-    return 0;
+
+    if (sample->type_counter >= selected_metrics_cnt)
+    {
+        return;
+    }
+
+    // find section if exists
+    for (int s = 0; s < MAX_MEASUREMENT; s++)
+    {
+        // if the section is null, we can create a new one and stop the loop
+        if (strlen(selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
+        {
+            strcpy(selected_metrics[sample->type_counter].acc_persection[s].name, sample->name);
+            selected_metrics[sample->type_counter].acc_persection[s].acc_value = sample->value;
+            return;
+        }
+
+        // if the section exists, we can accumulate the value and stop the loop
+        if (strcmp(sample->name, selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
+        {
+            selected_metrics[sample->type_counter].acc_persection[s].acc_value += sample->value;
+            return;
+        }
+    }
+
+    return;
 }
 
 static int attach_prog(struct bpf_program *prog)
 {
     int ifindex;
-    // struct bpf_prog_info info = {};
-    //__u32 info_len = sizeof(info);
+    struct bpf_prog_info info = {};
+    __u32 info_len = sizeof(info);
     int prog_fd;
+    int err;
 
     if (strcmp(progsec, bpf_program__section_name(prog)) != 0)
     {
@@ -223,14 +358,15 @@ static int attach_prog(struct bpf_program *prog)
     }
 
     // TODO - find a way to manage multiple prog id
-    /*     // get prog id
-        err = bpf_prog_get_info_by_fd(prog_fd, &info, &info_len);
-        if (err)
-        {
-            printf("[ERR]: can't get prog info - %s\n", strerror(errno));
-            return 1;
-        }
-        prog_id = info.id; */
+    // get prog id
+    err = bpf_prog_get_info_by_fd(prog_fd, &info, &info_len);
+    if (err)
+    {
+        printf("[ERR]: can't get prog info - %s\n", strerror(errno));
+        return 1;
+    }
+    fprintf(stdout, "[INFO]: Attached program id: %d\n", info.id);
+    fflush(stdout);
     return 0;
 }
 
@@ -251,8 +387,16 @@ static int handle_event(void *ctx, void *data, size_t len)
     strftime(ts, sizeof(ts), "%H:%M:%S", tm);
     // print metric name work beacouse of the order of the metrics
     // I think that the counter associated to the metric follow the order of how they are activated
-    fprintf(stdout, "%-8s    %s: %llu   ( %s ) \n", ts, selected_metrics[sample->type_counter].name, sample->value,
+    // fprintf(stdout, "%-8s    %s: %llu   ( %s ) \n", ts, selected_metrics[sample->type_counter].name, sample->value,
+    // sample->name);
+    if (output_filename)
+    {
+        fprintf(output_file, "%-8s %llu\n", ts, sample->value);
+        return 0;
+    }
+    fprintf(stdout, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample->type_counter].name, sample->value,
             sample->name);
+    fflush(stdout);
     return 0;
 }
 
@@ -286,7 +430,7 @@ int main(int arg, char **argv)
     selected_metrics_cnt = 0;
 
     // retrieve opt
-    while ((opt = getopt(arg, argv, ":m:P:f:i:e:a:h")) != -1)
+    while ((opt = getopt(arg, argv, ":m:P:f:i:e:ao:hs")) != -1)
     {
         switch (opt)
         {
@@ -335,14 +479,20 @@ int main(int arg, char **argv)
         case 'a':
             accumulate = 1;
             break;
+        case 'o':
+            output_filename = optarg;
+            break;
         case 'v':
             verbose = 1;
             break;
         case 'h':
             usage();
             return 0;
+        case 's':
+            supported_metrics();
+            return 0;
         default:
-            fprintf(stderr, "Invalid option\n");
+            fprintf(stderr, "Invalid option: %c\n", opt);
             usage();
             return 1;
         }
@@ -359,6 +509,10 @@ int main(int arg, char **argv)
     if (selected_metrics_cnt > 0)
     {
         perf_event_fds = malloc((selected_metrics_cnt * n_cpus) * sizeof(int));
+        for (int m = 0; m < selected_metrics_cnt; m++)
+        {
+            selected_metrics[m].acc_persection = malloc(MAX_MEASUREMENT * sizeof(struct section_stats));
+        }
     }
 
     // get obj
@@ -423,11 +577,19 @@ int main(int arg, char **argv)
         i_prog++;
     }
 
-    fprintf(stdout, "[INFO]: Running...\nPress Ctrl+C to stop\n");
+    fprintf(stdout, "[INFO]: Running... \nPress Ctrl+C to stop\n");
     if (selected_metrics_cnt > 0 && rb_map_fd > 0)
     {
         // start perf before polling
-        fflush(stdout);
+        if (output_filename)
+        {
+            output_file = fopen(output_filename, "a+");
+            if (output_file == NULL)
+            {
+                fprintf(stderr, "[ERR]: opening output file\n");
+                return 1;
+            }
+        }
         poll_stats(rb_map_fd);
     }
     else

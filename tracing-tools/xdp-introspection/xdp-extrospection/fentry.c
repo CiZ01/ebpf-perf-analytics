@@ -41,7 +41,6 @@
 struct my_value_perf
 {
     __u64 value;
-    __u64 value2;
 };
 
 static inline __u64 ptr_to_u64(const void *ptr)
@@ -56,7 +55,6 @@ struct profile_metric
     struct perf_event_attr attr;
     bool selected;
     __u64 my_value;
-    __u64 my_value2;
 
     /* calculate ratios like instructions per cycle */
     const int ratio_metric; /* 0 for N/A, 1 for index 0 (cycles) */
@@ -192,7 +190,6 @@ static void profile_read_values(struct fentry_bpf *obj)
             metrics[m].val.running += values[cpu].running;
             // my code
             metrics[m].my_value += my_values[cpu].value;
-            metrics[m].my_value2 += my_values[cpu].value2;
         }
         key++;
     }
@@ -214,7 +211,6 @@ static void profile_print_readings_plain(void)
         // questa è quella che mi interessa
         printf("%18llu %-20s", val->counter, metrics[m].name);
         printf("%18llu %-20s", metrics[m].my_value, "my_value");
-        printf("%18llu %-20s", metrics[m].my_value2, "my_value2");
 
         r = metrics[m].ratio_metric - 1;
         if (r >= 0 && metrics[r].selected && metrics[r].val.counter > 0)
@@ -382,7 +378,7 @@ static int profile_open_perf_events(struct fentry_bpf *obj)
                 return -1;
             }
         }
-        printf("Start: %s", metrics[m].name);
+        printf("Start: %s \n", metrics[m].name);
     }
     return 0;
 }

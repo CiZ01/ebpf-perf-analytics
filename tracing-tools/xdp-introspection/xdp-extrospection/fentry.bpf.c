@@ -12,7 +12,6 @@ __u64 bpf_mykperf_read_rdpmc(__u8 counter__k) __ksym;
 struct my_value_perf
 {
     __u64 value;
-    __u64 value2;
 };
 
 /* readings at fentry */
@@ -77,15 +76,6 @@ int BPF_PROG(fentry_XXX)
     __u32 zero = 0;
     long err;
 
-    /* look up before reading, to reduce error */
-    ptr = bpf_map_lookup_elem(&fentry_readings, &zero);
-    if (!ptr)
-        return 0;
-
-    err = bpf_perf_event_read_value(&events, key, ptr, sizeof(*ptr));
-    if (err)
-        return 0;
-
     // my code
     struct my_value_perf *ptr_my_value;
     // faccio la stessa cosa
@@ -97,7 +87,15 @@ int BPF_PROG(fentry_XXX)
 
     // my code
     ptr_my_value->value = bpf_mykperf_read_rdpmc(0);
-    ptr_my_value->value2 = bpf_mykperf_read_rdpmc(1);
+
+    /* look up before reading, to reduce error */
+    ptr = bpf_map_lookup_elem(&fentry_readings, &zero);
+    if (!ptr)
+        return 0;
+
+    err = bpf_perf_event_read_value(&events, key, ptr, sizeof(*ptr));
+    if (err)
+        return 0;
 
     return 0;
 }
@@ -136,13 +134,11 @@ static inline void fexit_update_maps(struct bpf_perf_event_value *after, struct 
         struct my_value_perf *my_accum;
 
         my_diff.value = my_after->value - my_before->value;
-        my_diff.value2 = my_after->value2 - my_before->value2;
 
         my_accum = bpf_map_lookup_elem(&my_accum_readings, &zero);
         if (my_accum)
         {
             my_accum->value += my_diff.value;
-            my_accum->value2 += my_diff.value2;
         }
     }
     // se salva il puntatore nella mappa non c'è bisogno di aggiornala
@@ -161,14 +157,14 @@ int BPF_PROG(fexit_XXX)
     // my code | va bene un puntatore perché poi carico dentro la mappa per value,
     // vedere update_maps
     struct my_value_perf my_reading;
+
+    // my code
+    my_reading.value = bpf_mykperf_read_rdpmc(0);
+
     /* read all events before updating the maps, to reduce error */
     err = bpf_perf_event_read_value(&events, cpu, &reading, sizeof(reading));
     if (err)
         return 0;
-
-    // my code
-    my_reading.value = bpf_mykperf_read_rdpmc(0);
-    my_reading.value2 = bpf_mykperf_read_rdpmc(1);
 
     // from bpftool
     count = bpf_map_lookup_elem(&counts, &zero);

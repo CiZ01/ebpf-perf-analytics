@@ -13,10 +13,7 @@
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
 
-#ifdef TRACE
-__u64 bpf_mykperf_read_rdpmc(__u8 counter) __ksym;
 BPF_MYKPERF_INIT_TRACE();
-#endif
 
 static __always_inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
 {
@@ -44,22 +41,21 @@ static __always_inline __u16 icmp_cksum(struct icmphdr *icmph, void *data_end)
 SEC("xdp")
 int xdp_cksm_func(struct xdp_md *ctx)
 {
-    BPF_MYKPERF_START_TRACE(test, 0);
+    BPF_MYKPERF_START_TRACE(main, 0);
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
     struct ethhdr *eth = data;
     struct iphdr *iph = data + sizeof(*eth);
     struct icmphdr *icmph = data + sizeof(*eth) + sizeof(*iph);
 
-    bpf_printk("xdp_cksm_func\n");
     if ((void *)(icmph + 1) > data_end)
     {
+        BPF_MYKPERF_END_TRACE(main, 0);
         return XDP_PASS;
     }
 
     if (iph->protocol == IPPROTO_ICMP)
     {
-        BPF_MYKPERF_START_TRACE(CKSUM, 1);
         volatile __u16 csum;
         // 1
         csum = icmp_cksum(icmph, data_end);
@@ -69,7 +65,6 @@ int xdp_cksm_func(struct xdp_md *ctx)
         csum = icmp_cksum(icmph, data_end);
         // 1
         csum = icmp_cksum(icmph, data_end);
-        BPF_MYKPERF_END_TRACE(CKSUM, 1);
         /* csum = icmp_cksum(icmph, data_end);
          // 3
          csum = icmp_cksum(icmph, data_end);
@@ -78,7 +73,8 @@ int xdp_cksm_func(struct xdp_md *ctx)
          // 2
          csum = icmp_cksum(icmph, data_end); */
     }
-    BPF_MYKPERF_END_TRACE(test, 0);
+
+    BPF_MYKPERF_END_TRACE(main, 0);
     return XDP_PASS;
 }
 

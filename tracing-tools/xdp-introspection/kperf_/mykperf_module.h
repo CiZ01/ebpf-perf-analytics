@@ -5,34 +5,48 @@
 
 struct record
 {
-    char name[16];
     __u64 value;
+    char name[16];
     __u8 type_counter;
 };
 
 #ifdef TRACE
 #define BPF_MYKPERF_INIT_TRACE()                                                                                       \
+    __u64 bpf_mykperf_read_rdpmc(__u8 counter) __ksym;                                                                 \
     struct                                                                                                             \
     {                                                                                                                  \
         __uint(type, BPF_MAP_TYPE_RINGBUF);                                                                            \
-        __uint(max_entries, 4096);                                                                                     \
+        __uint(max_entries, 256 * 1024);                                                                               \
     } ring_output SEC(".maps");
 
 #define BPF_MYKPERF_START_TRACE(sec_name, counter)                                                                     \
-    struct record sec_name = {0};                                                                                      \
-    memcpy(sec_name.name, #sec_name, sizeof(sec_name.name));                                                           \
-    sec_name.value = bpf_mykperf_read_rdpmc(counter);
+    struct record *sec_name;                                                                                           \
+    sec_name = bpf_ringbuf_reserve(&ring_output, sizeof(struct record), 0);                                            \
+    if (sec_name)                                                                                                      \
+    {                                                                                                                  \
+        sec_name->value = bpf_mykperf_read_rdpmc(counter);                                                             \
+        memcpy(sec_name->name, #sec_name, sizeof(sec_name->name));                                                     \
+        sec_name->type_counter = counter;                                                                              \
+    }                                                                                                                  \
+    else                                                                                                               \
+    {                                                                                                                  \
+        bpf_printk("Failed to reserve ring buffer\n");                                                                 \
+    }
 
 #define BPF_MYKPERF_END_TRACE(sec_name, counter)                                                                       \
-    sec_name.value = bpf_mykperf_read_rdpmc(counter) - sec_name.value;                                                 \
-    sec_name.type_counter = counter;                                                                                   \
-    bpf_ringbuf_output(&ring_output, &sec_name, sizeof(sec_name), BPF_RB_FORCE_WAKEUP);
+    if (sec_name)                                                                                                      \
+    {                                                                                                                  \
+        sec_name->value = bpf_mykperf_read_rdpmc(counter) - sec_name->value;                                           \
+        bpf_ringbuf_submit(sec_name, 0);                                                                               \
+    }
+
+// sec_name.type_counter = counter;
 
 #define BPF_MYKPERF_END_TRACE_VERBOSE(sec_name, counter)                                                               \
-    sec_name.value = bpf_mykperf_read_rdpmc(counter) - #sec_name.value;                                                \
-    sec_name.type_counter = counter;                                                                                   \
+    sec_name = bpf_mykperf_read_rdpmc(counter) - #sec_name->value;                                                     \
     bpf_ringbuf_output(&ring_output, &sec_name, sizeof(sec_name), BPF_RB_FORCE_WAKEUP);                                \
     bpf_printk("[PERF] %s: %lld\n", #sec_name, sec_name->value);
+// sec_name.type_counter = counter;
 
 #else
 #define BPF_MYKPERF_INIT_TRACE()

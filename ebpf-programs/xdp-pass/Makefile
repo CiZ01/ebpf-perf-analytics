@@ -1,24 +1,28 @@
 TARGET := xdp_pass_kern
 TARGET_USER := xdp_pass_user
 TARGET_TEST := xdp_pass_test
+KHEADER:= ../../tracing-tools/xdp-introspection/kperf_
+
 
 .SILENT: all
-
-build: $(TARGET) $(TARGET)_skel $(TARGET_USER) $(TARGET_TEST)_run
-
-build_trace: $(TARGET)_trace $(TARGET)_trace_skel $(TARGET_USER)_trace $(TARGET_TEST)_trace_run
+.PHONY: all build build_trace
 
 all: build build_trace
+
+build: $(TARGET) #$(TARGET)_skel $(TARGET_USER) $(TARGET_TEST)_run
+
+build_trace: $(TARGET)_trace #$(TARGET)_trace_skel $(TARGET_USER)_trace $(TARGET_TEST)_trace_run
+
 
 
 # --------------------- KERNEL SPACE -------------------------------
 $(TARGET): 
 	@echo "[INFO]: Compiling $(TARGET)"
-	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET).o
+	clang -g -Wno-compare-distinct-pointer-types -O2 -I$(KHEADER) -target bpf -c $(TARGET).c -o $(TARGET).o
 
 $(TARGET)_trace:
 	@echo "[INFO]: Compiling $(TARGET)_trace"
-	clang -g -Wno-compare-distinct-pointer-types -O2 -target bpf -c $(TARGET).c -o $(TARGET)_trace.o -DTRACE=1
+	clang -g -Wno-compare-distinct-pointer-types -O2 -I$(KHEADER) -target bpf -c $(TARGET).c -o $(TARGET)_trace.o -DTRACE=1
 
 # --------------------- GEN SKELETON -------------------------------
 $(TARGET)_skel:

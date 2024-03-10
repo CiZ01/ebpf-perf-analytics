@@ -12,14 +12,15 @@ perf*
 *.csv
 ebpf-programs/loader/loader
 
-#exclude test
-./ebpf-programs/xdp-change-id/tests/
-**/xdp-cksm/tests/*
-**/xdp-change-id/tests/test*/
-**/tests/*
+#exclude test files
+**/tests/test*/
+
+#exclude skel
+*_skel.h
 
 # exclude kmodule build files
 *.mod
+*.mod.c
 *.ko
 *.order
 *.symvers
