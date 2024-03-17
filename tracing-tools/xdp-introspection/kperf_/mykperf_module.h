@@ -2,6 +2,9 @@
 #define MYKEPERF_MODULE_H
 
 #define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
+#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+
+#define RAND_FN bpf_get_prandom_u32()
 
 struct record
 {
@@ -20,7 +23,6 @@ struct record
     } ring_output SEC(".maps");
 
 #define BPF_MYKPERF_START_TRACE(sec_name, counter)                                                                     \
-    struct record *sec_name;                                                                                           \
     sec_name = bpf_ringbuf_reserve(&ring_output, sizeof(struct record), 0);                                            \
     if (sec_name)                                                                                                      \
     {                                                                                                                  \
@@ -40,19 +42,37 @@ struct record
         bpf_ringbuf_submit(sec_name, 0);                                                                               \
     }
 
-// sec_name.type_counter = counter;
-
+// should not work
 #define BPF_MYKPERF_END_TRACE_VERBOSE(sec_name, counter)                                                               \
-    sec_name = bpf_mykperf_read_rdpmc(counter) - #sec_name->value;                                                     \
+    sec_name = bpf_mykperf_read_rdpmc(counter) - sec_name->value;                                                      \
     bpf_ringbuf_output(&ring_output, &sec_name, sizeof(sec_name), BPF_RB_FORCE_WAKEUP);                                \
     bpf_printk("[PERF] %s: %lld\n", #sec_name, sec_name->value);
-// sec_name.type_counter = counter;
+
+// ----------------------------- SAMPLED TRACE -----------------------------
+#define BPF_MYKPERF_START_TRACE_SAMPLED(sec_name, counter, sample_rate)                                                \
+    __u8 sampled_##sec_name = 0;                                                                                       \
+    struct record *sec_name;                                                                                           \
+    if (UNLIKELY(RAND_FN & sample_rate))                                                                               \
+    {                                                                                                                  \
+        sampled_##sec_name = 1;                                                                                        \
+        BPF_MYKPERF_START_TRACE(sec_name, counter)                                                                     \
+    }
+
+#define BPF_MYKPERF_END_TRACE_SAMPLED(sec_name, counter)                                                               \
+    if (UNLIKELY(sampled_##sec_name))                                                                       \
+    {                                                                                                                  \
+        BPF_MYKPERF_END_TRACE(sec_name, counter)                                                                       \
+    }
+
+// ----------------------------- --- -----------------------------
 
 #else
 #define BPF_MYKPERF_INIT_TRACE()
 #define BPF_MYKPERF_START_TRACE(sec_name, counter)
 #define BPF_MYKPERF_END_TRACE(sec_name, counter)
 #define BPF_MYKPERF_END_TRACE_VERBOSE(sec_name, counter)
+#define BPF_MYKPERF_START_TRACE_SAMPLED(sec_name, counter, sample_rate)
+#define BPF_MYKPERF_END_TRACE_SAMPLED(sec_name, counter)
 #endif
 
 #endif // MYKEPERF_MODULE_H

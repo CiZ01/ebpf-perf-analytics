@@ -34,7 +34,9 @@ struct section_stats
 {
     __u64 acc_value;
     char name[16];
-    // I don't need type counter, this struct is used inside `profile_metric`
+    __u64 run_cnt; // if the sections are sampled, we can count the runs
+
+    // I don't need type counter attribute, this struct is used inside `profile_metric`
 };
 
 // metrics definition
@@ -225,6 +227,8 @@ static void print_accumulated_stats()
     // set locale to print numbers with dot as thousands separator
     setlocale(LC_NUMERIC, "");
 
+    float percentage;
+
     fprintf(stdout, "\nAccumulated stats\n\n");
     for (int i = 0; i < selected_metrics_cnt; i++)
     {
@@ -233,8 +237,9 @@ static void print_accumulated_stats()
         {
             if (strlen(selected_metrics[i].acc_persection[s].name) > 0)
             {
-                fprintf(stdout, "    %s: %'llu\n\n", selected_metrics[i].acc_persection[s].name,
-                        selected_metrics[i].acc_persection[s].acc_value);
+                percentage = ((float)selected_metrics[i].acc_persection[s].run_cnt / run_cnt) * 100;
+                fprintf(stdout, "    %s: %'llu      (%.2f%%)\n\n", selected_metrics[i].acc_persection[s].name,
+                        selected_metrics[i].acc_persection[s].acc_value, percentage);
             }
             else
             {
@@ -261,25 +266,37 @@ static void int_exit(int sig)
 
     if (enable_run_cnt)
     {
+        // set locale to print numbers with dot as thousands separator
+        // setlocale(LC_NUMERIC, "");
+
         // retrieve count fd
         int counts_fd = bpf_map__fd(profile_obj->maps.counts);
-        // retrieve count value
-        __u64 counts[n_cpus];
-        int err = bpf_map_lookup_elem(counts_fd, &run_cnt, counts);
-        if (err)
+        if (counts_fd < 0)
         {
-            fprintf(stderr, "[ERR]: retrieving run count\n");
+            fprintf(stderr, "[ERR]: retrieving counts fd\n");
+            run_cnt = -1;
         }
-
-        for (int i = 0; i < n_cpus; i++)
+        else
         {
-            run_cnt += counts[i];
-            if (verbose && counts[i] > 0)
+
+            // retrieve count value
+            __u64 counts[n_cpus];
+            int err = bpf_map_lookup_elem(counts_fd, &run_cnt, counts);
+            if (err)
             {
-                fprintf(stdout, "CPU[%03d]: %llu\n", i, counts[i]);
+                fprintf(stderr, "[ERR]: retrieving run count\n");
+            }
+
+            for (int i = 0; i < n_cpus; i++)
+            {
+                run_cnt += counts[i];
+                if (verbose && counts[i] > 0)
+                {
+                    fprintf(stdout, "\nCPU[%03d]: %'llu", i, counts[i]);
+                }
             }
         }
-        fprintf(stdout, "Total run_cnt %d cpus: %llu\n", n_cpus, run_cnt);
+        fprintf(stdout, "\nTotal run_cnt: %'llu     [N.CPUS: %d]\n", run_cnt, n_cpus);
 
         profiler__detach(profile_obj);
         profiler__destroy(profile_obj);
@@ -341,6 +358,7 @@ void accumulate_stats(void *data)
         {
             strcpy(selected_metrics[sample->type_counter].acc_persection[s].name, sample->name);
             selected_metrics[sample->type_counter].acc_persection[s].acc_value = sample->value;
+            selected_metrics[sample->type_counter].acc_persection[s].run_cnt = 1;
             return;
         }
 
@@ -348,6 +366,7 @@ void accumulate_stats(void *data)
         if (strcmp(sample->name, selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
         {
             selected_metrics[sample->type_counter].acc_persection[s].acc_value += sample->value;
+            selected_metrics[sample->type_counter].acc_persection[s].run_cnt++;
             return;
         }
     }

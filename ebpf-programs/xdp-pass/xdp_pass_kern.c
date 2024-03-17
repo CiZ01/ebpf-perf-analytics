@@ -7,13 +7,12 @@ __u64 bpf_mykperf_read_rdpmc(__u8 counter) __ksym;
 
 SEC("xdp") int xdp_pass_func(struct xdp_md *ctx)
 {
-    __u64 value;
-    BPF_MYKPERF_START_TRACE(main, 0);
+    BPF_MYKPERF_START_TRACE_SAMPLED(main, 0, 0x01);
 
-    BPF_MYKPERF_START_TRACE(goku, 0);
-    BPF_MYKPERF_END_TRACE(goku, 0);
+    bpf_printk("xdp_pass_func\n");
 
-    BPF_MYKPERF_END_TRACE(main, 0);
+    BPF_MYKPERF_END_TRACE_SAMPLED(main, 0);
+
     return XDP_PASS;
 }
 
