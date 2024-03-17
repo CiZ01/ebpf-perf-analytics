@@ -1,21 +1,23 @@
-XDP_PASS=./xdp-pass/xdp_pass_kern
-XDP_DROP=./xdp-pass/xdp_drop_kern
+# Description: Makefile for ebpf-programs
 
-CC=clang
-CFLAGS= -Wall -O2 -g -target bpf
-LOADER=./loader/loader
+SUBDIRS := $(shell find . -mindepth 2 -type f -name 'Makefile' -exec dirname {} \;)
 
-all: xdp-pass xdp-drop
+# remove duplicates and sort
+SUBDIRS := $(sort $(SUBDIRS))
+SUBDIRS := $(filter-out ./,$(SUBDIRS))
 
-xdp-pass:
-	$(CC) $(CFLAGS) -c $(XDP_PASS).c -o $(XDP_PASS).o 
+.PHONY: all $(SUBDIRS) clean
 
-xdp-drop:
-	$(CC) $(CFLAGS) -c $@.c -o $@.o
+.SILENT: all
 
-load:
-	$(LOADER) $(xdp) $(if) $(sec)
+all: $(SUBDIRS)
+
+$(SUBDIRS):
+	@echo "Building $@..."
+	$(MAKE) -C $@ all
 
 clean:
-	rm -f $(XDP_PASS).o $(XDP_DROP).o
-
+	@for dir in $(SUBDIRS); do \
+		echo "Cleaning $$dir..."; \
+        $(MAKE) -C $$dir clean; \
+    done

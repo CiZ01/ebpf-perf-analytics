@@ -23,6 +23,7 @@
 #include <linux/perf_event.h>
 #include <sys/ioctl.h>
 
+#include "profiler/profiler.skel.h"
 #include "mykperf_module.h"
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
@@ -140,6 +141,11 @@ int prog_id;
 int n_cpus;
 int *perf_event_fds;
 
+// profiler
+static struct profiler *profile_obj;
+int enable_run_cnt;
+__u64 run_cnt;
+
 // output file
 FILE *output_file;
 char *output_filename;
@@ -163,6 +169,7 @@ void usage()
     printf("  -P <progsec>       : Program section name\n");
     printf("  -e <metrics>       : Comma separated list of metrics\n");
     printf("  -a                 : Accumulate stats\n");
+    printf("  -c                 : Enable run count\n");
     printf("  -o <output_filename> : Output filename\n");
     printf("  -v                 : Verbose\n");
     printf("  -h                 : Print this help\n");
@@ -195,7 +202,7 @@ static int start_perf(int n_cpus)
                 {
                     if (verbose)
                     {
-                        fprintf(stderr, "[ERR]: cpu: %d may be offline\n", cpu);
+                        fprintf(stderr, "[WARN]: cpu: %d may be offline\n", cpu);
                     }
                     continue;
                 }
@@ -251,6 +258,32 @@ static void int_exit(int sig)
     // close output file
     if (output_file)
         fclose(output_file);
+
+    if (enable_run_cnt)
+    {
+        // retrieve count fd
+        int counts_fd = bpf_map__fd(profile_obj->maps.counts);
+        // retrieve count value
+        __u64 counts[n_cpus];
+        int err = bpf_map_lookup_elem(counts_fd, &run_cnt, counts);
+        if (err)
+        {
+            fprintf(stderr, "[ERR]: retrieving run count\n");
+        }
+
+        for (int i = 0; i < n_cpus; i++)
+        {
+            run_cnt += counts[i];
+            if (verbose && counts[i] > 0)
+            {
+                fprintf(stdout, "CPU[%03d]: %llu\n", i, counts[i]);
+            }
+        }
+        fprintf(stdout, "Total run_cnt %d cpus: %llu\n", n_cpus, run_cnt);
+
+        profiler__detach(profile_obj);
+        profiler__destroy(profile_obj);
+    }
 
     // print accumulated stats
     if (accumulate)
@@ -367,6 +400,50 @@ static int attach_prog(struct bpf_program *prog)
     }
     fprintf(stdout, "[INFO]: Attached program id: %d\n", info.id);
     fflush(stdout);
+
+    // attach profiler program to count runs
+    if (enable_run_cnt)
+    {
+        const char *prog_name;
+        // retrieve prog name
+        prog_name = bpf_program__name(prog);
+        if (!prog_name)
+        {
+            fprintf(stderr, "[ERR]: retrieving prog name during profiler init\n");
+            return 1;
+        }
+
+        // this will be the profiler program
+        struct bpf_program *prof_prog;
+
+        bpf_object__for_each_program(prof_prog, profile_obj->obj)
+        {
+            err = bpf_program__set_attach_target(prof_prog, prog_fd, prog_name);
+            if (err)
+            {
+                fprintf(stderr, "[ERR]: setting attach target during profiler init\n");
+                return 1;
+            }
+        }
+
+        // load profiler
+        err = profiler__load(profile_obj);
+        if (err)
+        {
+            fprintf(stderr, "[ERR]: loading profiler\n");
+            return 1;
+        }
+
+        // attach profiler
+        err = profiler__attach(profile_obj);
+        if (err)
+        {
+            fprintf(stderr, "[ERR]: attaching profiler\n");
+            return 1;
+        }
+
+        fprintf(stdout, "[INFO]: Attached profiler\n");
+    }
     return 0;
 }
 
@@ -430,7 +507,7 @@ int main(int arg, char **argv)
     selected_metrics_cnt = 0;
 
     // retrieve opt
-    while ((opt = getopt(arg, argv, ":m:P:f:i:e:ao:hs")) != -1)
+    while ((opt = getopt(arg, argv, ":m:P:f:i:e:ao:hsvc")) != -1)
     {
         switch (opt)
         {
@@ -479,6 +556,9 @@ int main(int arg, char **argv)
         case 'a':
             accumulate = 1;
             break;
+        case 'c':
+            enable_run_cnt = 1;
+            break;
         case 'o':
             output_filename = optarg;
             break;
@@ -512,6 +592,18 @@ int main(int arg, char **argv)
         for (int m = 0; m < selected_metrics_cnt; m++)
         {
             selected_metrics[m].acc_persection = malloc(MAX_MEASUREMENT * sizeof(struct section_stats));
+        }
+    }
+
+    // if enable_run_cnt is set, enable run count
+    // open profile object
+    if (enable_run_cnt)
+    {
+        profile_obj = profiler__open();
+        if (!profile_obj)
+        {
+            fprintf(stderr, "[ERR]: opening profile object\n");
+            return 1;
         }
     }
 
@@ -568,6 +660,8 @@ int main(int arg, char **argv)
     int i_prog = 0;
     bpf_object__for_each_program(prog, obj)
     {
+        // attach prog to interface and if enable_run_cnt is set, enable run count
+        // attaching a fentry program
         err = attach_prog(prog);
         if (err)
         {

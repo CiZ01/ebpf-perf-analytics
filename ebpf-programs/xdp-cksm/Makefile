@@ -2,6 +2,10 @@ TARGET := xdp_cksm_kern
 TARGET_USER := xdp_cksm_user
 KHEADER:= ../../tracing-tools/xdp-introspection/kperf_
 
+# check if mykperf module is loaded
+MYKPERF_LOADED := $(shell lsmod | grep -q '^mykperf' && echo "true");
+	
+
 .SILENT: all
 .PHONY: all build build_trace
 
