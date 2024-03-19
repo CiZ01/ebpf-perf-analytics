@@ -236,6 +236,9 @@ static int start_perf(int n_cpus)
 
 static void print_accumulated_stats()
 {
+    // set locale to print numbers with dot as thousands separator
+    setlocale(LC_NUMERIC, "");
+
     float percentage = 0;
     float avg_single_run = 0;
 
@@ -250,8 +253,7 @@ static void print_accumulated_stats()
 
                 if (enable_run_cnt)
                 {
-                    avg_single_run = (float)selected_metrics[i].acc_persection[s].acc_value /
-                                     selected_metrics[i].acc_persection[s].run_cnt;
+                    avg_single_run = (float)selected_metrics[i].acc_persection[s].acc_value / run_cnt;
                     percentage = ((float)selected_metrics[i].acc_persection[s].run_cnt / run_cnt) * 100;
                 }
 
@@ -542,7 +544,7 @@ static void poll_stats(unsigned int map_fd)
 {
     int err;
 
-    // // FIX - when a new ring buffer is opened, it receives the data that was not read previous
+    // TODO FIX - when a new ring buffer is opened, it receives the data that was not read previous
     rb = ring_buffer__new(map_fd, handle_event, NULL, NULL);
     err = libbpf_get_error(rb);
     if (err)
@@ -578,9 +580,6 @@ static void poll_stats(unsigned int map_fd)
 
 int main(int arg, char **argv)
 {
-    // set locale to print numbers with dot as thousands separator
-    setlocale(LC_NUMERIC, ".utf8");
-
     int rb_map_fd = -1;
     struct bpf_program *prog;
     int err, opt;
