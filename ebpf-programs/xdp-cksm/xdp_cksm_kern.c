@@ -56,6 +56,7 @@ int xdp_cksm_func(struct xdp_md *ctx)
 
     if (iph->protocol == IPPROTO_ICMP)
     {
+        
         volatile __u16 csum;
         // 1
         csum = icmp_cksum(icmph, data_end);

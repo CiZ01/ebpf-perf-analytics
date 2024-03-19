@@ -26,9 +26,16 @@
 #include "profiler/profiler.skel.h"
 #include "mykperf_module.h"
 
+// --- PRETTY PRINT -----
+#define ERR "\033[1;31mERR\033[0m"
+#define WARN "\033[1;33mWARN\033[0m"
+#define INFO "\033[1;32mINFO\033[0m"
+#define DEBUG "\033[1;34mDEBUG\033[0m"
+
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define MAX_METRICS 8
 #define MAX_MEASUREMENT 16
+#define PINNED_PATH "/sys/fs/bpf/"
 
 struct section_stats
 {
@@ -133,15 +140,18 @@ struct profile_metric
     },
 };
 
+struct bpf_object *obj;
 int xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
 int verbose;
 int perf_fd;
+int load;
 char filename[256];
 char *progsec = "xdp";
 char *ifname;
 int prog_id;
 int n_cpus;
 int *perf_event_fds;
+struct ring_buffer *rb;
 
 // profiler
 static struct profiler *profile_obj;
@@ -157,19 +167,20 @@ int selected_metrics_cnt;
 
 // TODO - acc fn
 int accumulate;
+
+// TODO - it's not seem useful for now
 // how much run to wait before printing accumulated stats
 // int acc_period;
-// int run_cnt; not work, I don't know how to count runs
 
 void usage()
 {
-    printf("Usage: loader-stats -f <filename> -i <ifname> -m <mode> -P <progsec> -e <metrics> -a -o <output_filename> "
-           "-v -h\n");
+    printf("Usage: loader-stats -i <ifname> -f <filename> -m <mode>\n");
     printf("  -f <filename>      : BPF object file\n");
     printf("  -i <ifname>        : Interface name\n");
     printf("  -m <mode>          : xdp mode (skb, native)\n");
     printf("  -P <progsec>       : Program section name\n");
     printf("  -e <metrics>       : Comma separated list of metrics\n");
+    printf("  -l                 : Load program\n");
     printf("  -a                 : Accumulate stats\n");
     printf("  -c                 : Enable run count\n");
     printf("  -o <output_filename> : Output filename\n");
@@ -193,9 +204,9 @@ static int perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int
 
 static int start_perf(int n_cpus)
 {
-    for (int i = 0; i < selected_metrics_cnt; i++)
+    for (int cpu = 0; cpu < n_cpus; cpu++)
     {
-        for (int cpu = 0; cpu < n_cpus; cpu++)
+        for (int i = 0; i < selected_metrics_cnt; i++)
         {
             perf_fd = perf_event_open(&selected_metrics[i].attr, -1, cpu, -1, 0);
             if (perf_fd < 0)
@@ -204,16 +215,16 @@ static int start_perf(int n_cpus)
                 {
                     if (verbose)
                     {
-                        fprintf(stderr, "[WARN]: cpu: %d may be offline\n", cpu);
+                        fprintf(stderr, "[%s]: cpu: %d may be offline\n", WARN, cpu);
                     }
-                    continue;
+                    break;
                 }
             }
 
             // enable perf event
             if (ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, 0))
             {
-                fprintf(stderr, "[ERR]: ioctl failed - cpu: %d metric: %s\n", cpu, selected_metrics[i].name);
+                fprintf(stderr, "[%s]: ioctl failed - cpu: %d metric: %s\n", ERR, cpu, selected_metrics[i].name);
                 return -1;
             }
             perf_event_fds[cpu + i] = perf_fd;
@@ -238,6 +249,8 @@ static void print_accumulated_stats()
             if (strlen(selected_metrics[i].acc_persection[s].name) > 0)
             {
                 percentage = ((float)selected_metrics[i].acc_persection[s].run_cnt / run_cnt) * 100;
+                fprintf(stdout, "[%s]: %s - %'llu runs\n", DEBUG, selected_metrics[i].acc_persection[s].name,
+                        selected_metrics[i].acc_persection[s].run_cnt);
                 fprintf(stdout, "    %s: %'llu      (%.2f%%)\n\n", selected_metrics[i].acc_persection[s].name,
                         selected_metrics[i].acc_persection[s].acc_value, percentage);
             }
@@ -251,7 +264,7 @@ static void print_accumulated_stats()
     }
 }
 
-static void int_exit(int sig)
+static void init_exit(int sig)
 {
     for (int i = 0; i < (selected_metrics_cnt * n_cpus); i++)
     {
@@ -273,7 +286,7 @@ static void int_exit(int sig)
         int counts_fd = bpf_map__fd(profile_obj->maps.counts);
         if (counts_fd < 0)
         {
-            fprintf(stderr, "[ERR]: retrieving counts fd\n");
+            fprintf(stderr, "[%s]: retrieving counts fd\n", ERR);
             run_cnt = -1;
         }
         else
@@ -284,7 +297,7 @@ static void int_exit(int sig)
             int err = bpf_map_lookup_elem(counts_fd, &run_cnt, counts);
             if (err)
             {
-                fprintf(stderr, "[ERR]: retrieving run count\n");
+                fprintf(stderr, "[%s]: retrieving run count\n", ERR);
             }
 
             for (int i = 0; i < n_cpus; i++)
@@ -314,29 +327,36 @@ static void int_exit(int sig)
         free(selected_metrics[i].acc_persection);
     }
 
-    fprintf(stdout, "[INFO]: Detaching program...\n");
+    fprintf(stdout, "[%s]: Detaching program...\n", INFO);
 
-    int ifindex = if_nametoindex(ifname);
-    if (ifindex == 0)
+    // if the program was loaded by this tool, detach it
+    if (load)
     {
-        printf("[ERR]: getting ifindex during detaching\n");
-        exit(1);
-    }
-
-    // get in current prog id the xdp program attached to the interface
-    // until we find a way to manage multiple prog id this is not working
-    /*     if (bpf_xdp_query_id(ifindex, xdp_flags, &curr_prog_id))
+        int ifindex = if_nametoindex(ifname);
+        if (ifindex == 0)
         {
-            printf("[ERR]: bpf_xdp_query_id failed\n");
+            fprintf(stderr, "[%s]: getting ifindex during detaching\n", ERR);
             exit(1);
-        } */
+        }
 
-    if (bpf_xdp_detach(ifindex, xdp_flags, NULL))
-    {
-        printf("[ERR]: bpf_xdp_detach failed\n");
-        exit(1);
+        // get in current prog id the xdp program attached to the interface
+        // until we find a way to manage multiple prog id this is not working
+        /*     if (bpf_xdp_query_id(ifindex, xdp_flags, &curr_prog_id))
+            {
+                printf("[ERR]: bpf_xdp_query_id failed\n");
+                exit(1);
+            } */
+
+        if (bpf_xdp_detach(ifindex, xdp_flags, NULL))
+        {
+            fprintf(stderr, "%s: bpf_xdp_detach failed\n", ERR);
+            exit(1);
+        }
     }
-    fprintf(stdout, "[INFO]: Done \n");
+
+    bpf_object__close(obj);
+    ring_buffer__free(rb);
+    fprintf(stdout, "[%s]: Done \n", INFO);
     exit(0);
 }
 
@@ -387,26 +407,41 @@ static int attach_prog(struct bpf_program *prog)
         return 0;
     }
 
-    // get prog fd
-    prog_fd = bpf_program__fd(prog);
-    if (prog_fd < 0)
-    {
-        fprintf(stderr, "[ERR]: retrieving prog fd\n");
-        return 1;
-    }
-
     ifindex = if_nametoindex(ifname);
     if (ifindex == 0)
     {
-        fprintf(stderr, "[ERR]: getting ifindex - ifname: %s \n", ifname);
+        fprintf(stderr, "[%s]: getting ifindex - ifname: %s \n", ERR, ifname);
         return 1;
     }
 
     // attach prog
-    if (bpf_xdp_attach(ifindex, prog_fd, xdp_flags, NULL) < 0)
+    if (load)
     {
-        fprintf(stderr, "[ERR]: attaching program - ifname: %s \n", ifname);
-        return 1;
+        // get prog fd
+        prog_fd = bpf_program__fd(prog);
+        if (prog_fd < 0)
+        {
+            fprintf(stderr, "[%s]: retrieving prog fd\n", ERR);
+            return 1;
+        }
+
+        if (bpf_xdp_attach(ifindex, prog_fd, xdp_flags, NULL) < 0)
+        {
+            fprintf(stderr, "[%s]: attaching program - ifname: %s \n", ERR, ifname);
+            return 1;
+        }
+    }
+    else
+    {
+        // retrieve prog fd
+        char filename[256];
+        snprintf(filename, sizeof(filename), "%s%s", PINNED_PATH, bpf_program__section_name(prog));
+        prog_fd = bpf_obj_get(filename);
+        if (prog_fd < 0)
+        {
+            fprintf(stderr, "[%s]: retrieving prog fd: %s\n", ERR, filename);
+            return 1;
+        }
     }
 
     // TODO - find a way to manage multiple prog id
@@ -414,10 +449,13 @@ static int attach_prog(struct bpf_program *prog)
     err = bpf_prog_get_info_by_fd(prog_fd, &info, &info_len);
     if (err)
     {
-        printf("[ERR]: can't get prog info - %s\n", strerror(errno));
+        // I'm not sure if strerror manage errno properly
+        printf("[%s]: can't get prog info - %s\n", ERR, strerror(errno));
         return 1;
     }
-    fprintf(stdout, "[INFO]: Attached program id: %d\n", info.id);
+
+    fprintf(stdout, "[%s]: Program id: %d\n", INFO, info.id);
+
     fflush(stdout);
 
     // attach profiler program to count runs
@@ -428,7 +466,7 @@ static int attach_prog(struct bpf_program *prog)
         prog_name = bpf_program__name(prog);
         if (!prog_name)
         {
-            fprintf(stderr, "[ERR]: retrieving prog name during profiler init\n");
+            fprintf(stderr, "[%s]: retrieving prog name during profiler init\n", ERR);
             return 1;
         }
 
@@ -440,7 +478,7 @@ static int attach_prog(struct bpf_program *prog)
             err = bpf_program__set_attach_target(prof_prog, prog_fd, prog_name);
             if (err)
             {
-                fprintf(stderr, "[ERR]: setting attach target during profiler init\n");
+                fprintf(stderr, "[%s]: setting attach target during profiler init\n", ERR);
                 return 1;
             }
         }
@@ -449,7 +487,7 @@ static int attach_prog(struct bpf_program *prog)
         err = profiler__load(profile_obj);
         if (err)
         {
-            fprintf(stderr, "[ERR]: loading profiler\n");
+            fprintf(stderr, "[%s]: loading profiler\n", ERR);
             return 1;
         }
 
@@ -457,11 +495,11 @@ static int attach_prog(struct bpf_program *prog)
         err = profiler__attach(profile_obj);
         if (err)
         {
-            fprintf(stderr, "[ERR]: attaching profiler\n");
+            fprintf(stderr, "[%s]: attaching profiler\n", ERR);
             return 1;
         }
 
-        fprintf(stdout, "[INFO]: Attached profiler\n");
+        fprintf(stdout, "[%s]: Attached profiler\n", INFO);
     }
     return 0;
 }
@@ -481,10 +519,7 @@ static int handle_event(void *ctx, void *data, size_t len)
     time(&t);
     tm = localtime(&t);
     strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-    // print metric name work beacouse of the order of the metrics
-    // I think that the counter associated to the metric follow the order of how they are activated
-    // fprintf(stdout, "%-8s    %s: %llu   ( %s ) \n", ts, selected_metrics[sample->type_counter].name, sample->value,
-    // sample->name);
+
     if (output_filename)
     {
         fprintf(output_file, "%-8s %llu\n", ts, sample->value);
@@ -499,14 +534,34 @@ static int handle_event(void *ctx, void *data, size_t len)
 static void poll_stats(unsigned int map_fd)
 {
     int err;
-    struct ring_buffer *rb;
+
+    // TODO FIX - when a new ring buffer is opened, it receives the data that was not read previous
     rb = ring_buffer__new(map_fd, handle_event, NULL, NULL);
     err = libbpf_get_error(rb);
     if (err)
     {
         rb = NULL;
-        fprintf(stderr, "[ERR]: failed to open ring buffer: %d\n", err);
-        int_exit(0);
+        fprintf(stderr, "[%s]: failed to open ring buffer: %d\n", ERR, err);
+        init_exit(0);
+    }
+
+    /*
+     * we must consume the events received before this tool was started,
+     * otherwise some statistics would have wrong values compared with the data calculated by the tool.
+     * The statistics involved:
+     *   - percentage of samples
+     */
+    if (!load)
+    {
+        int n = ring_buffer__consume(rb);
+        if (n < 0)
+        {
+            fprintf(stderr, "[%s]: failed to consume ring buffer\n some value could be wrong", WARN);
+        }
+        else if (verbose) // if verbose is set, print the number of consumed events
+        {
+            fprintf(stdout, "[%s]: consumed %d events\n", INFO, n);
+        }
     }
 
     while (ring_buffer__poll(rb, 100) >= 0)
@@ -518,15 +573,15 @@ int main(int arg, char **argv)
 {
     int rb_map_fd = -1;
     struct bpf_program *prog;
-    struct bpf_object *obj;
     int err, opt;
 
     // set shared var
     n_cpus = libbpf_num_possible_cpus();
     selected_metrics_cnt = 0;
+    load = 0;
 
     // retrieve opt
-    while ((opt = getopt(arg, argv, ":m:P:f:i:e:ao:hsvc")) != -1)
+    while ((opt = getopt(arg, argv, ":m:P:f:i:e:ao:hsvlc")) != -1)
     {
         switch (opt)
         {
@@ -572,6 +627,9 @@ int main(int arg, char **argv)
         case 'i':
             ifname = optarg;
             break;
+        case 'l':
+            load = 1;
+            break;
         case 'a':
             accumulate = 1;
             break;
@@ -611,6 +669,7 @@ int main(int arg, char **argv)
         for (int m = 0; m < selected_metrics_cnt; m++)
         {
             selected_metrics[m].acc_persection = malloc(MAX_MEASUREMENT * sizeof(struct section_stats));
+            selected_metrics[m].acc_persection->run_cnt = 0;
         }
     }
 
@@ -621,7 +680,7 @@ int main(int arg, char **argv)
         profile_obj = profiler__open();
         if (!profile_obj)
         {
-            fprintf(stderr, "[ERR]: opening profile object\n");
+            fprintf(stderr, "[%s]: opening profile object\n", ERR);
             return 1;
         }
     }
@@ -631,47 +690,71 @@ int main(int arg, char **argv)
     if (libbpf_get_error(obj))
         return 1;
 
-    // set prog type
-    bpf_object__for_each_program(prog, obj)
+    // load obj
+    if (load)
     {
-        err = bpf_program__set_type(prog, BPF_PROG_TYPE_XDP);
+        // set prog type
+        bpf_object__for_each_program(prog, obj)
+        {
+            err = bpf_program__set_type(prog, BPF_PROG_TYPE_XDP);
+            if (err)
+            {
+                fprintf(stderr, "[%s]: setting program type\n", ERR);
+                return 1;
+            }
+        }
+
+        err = bpf_object__load(obj);
         if (err)
         {
-            fprintf(stderr, "[ERR]: setting program type\n");
+            fprintf(stderr, "[%s]: loading object\n", ERR);
             return 1;
         }
     }
 
-    // load obj
-    err = bpf_object__load(obj);
-    if (err)
-    {
-        fprintf(stderr, "[ERR]: loading object\n");
-        return 1;
-    }
-
     // set trap for ctrl+c
-    signal(SIGINT, int_exit);
-    signal(SIGTERM, int_exit);
+    signal(SIGINT, init_exit);
+    signal(SIGTERM, init_exit);
 
-    fprintf(stdout, "[INFO]: Loaded object...\n");
+    fprintf(stdout, "[%s]: Loaded object...\n", INFO);
 
-    // get ring buffer if verbose
+    // get ring buffer if at least one metric is selected
     if (selected_metrics_cnt > 0)
     {
-        rb_map_fd = bpf_object__find_map_fd_by_name(obj, "ring_output");
-        if (rb_map_fd < 0)
+        if (load)
         {
-            fprintf(stderr, "[ERR]: finding map\n");
-            return 1;
+            rb_map_fd = bpf_object__find_map_fd_by_name(obj, "ring_output");
+            if (rb_map_fd < 0)
+            {
+                fprintf(stderr, "[%s]: finding map\n", ERR);
+                return 1;
+            }
+        }
+        else // if not loaded by this tool, retrieve map fd
+        {
+            char filename_map[256];
+            err = snprintf(filename_map, sizeof(filename_map), "%s%s", PINNED_PATH, "ring_output");
+            if (err < 0)
+            {
+                fprintf(stderr, "[%s]: creating filename for pinned path\n", ERR);
+                return 1;
+            }
+
+            // retrieve map fd from pinned path
+            rb_map_fd = bpf_obj_get(filename_map);
+            if (rb_map_fd < 0)
+            {
+                fprintf(stderr, "[%s]: getting map fd from pinned path: %s\n", ERR, filename_map);
+                return 1;
+            }
         }
     }
 
     // start perf before loading prog
-    err = start_perf(n_cpus); // perf fd will be freed during int_exit
+    err = start_perf(n_cpus); // perf fd will be freed during init_exit
     if (err)
     {
-        int_exit(0);
+        init_exit(0);
         return 1;
     }
 
@@ -681,35 +764,44 @@ int main(int arg, char **argv)
     {
         // attach prog to interface and if enable_run_cnt is set, enable run count
         // attaching a fentry program
+
+        // the program will be attached only if load is set
+        // otherwise `attach_prog` retrieve the program id and attach the profiler if enable_run_cnt is set
         err = attach_prog(prog);
         if (err)
         {
-            int_exit(0);
+            init_exit(0);
             return 1;
         }
         i_prog++;
     }
 
-    fprintf(stdout, "[INFO]: Running... \nPress Ctrl+C to stop\n");
+    fprintf(stdout, "[%s]: Running... \nPress Ctrl+C to stop\n", INFO);
     if (selected_metrics_cnt > 0 && rb_map_fd > 0)
     {
-        // start perf before polling
+        // TODO - Using file as output instead stdout may not work properly
         if (output_filename)
         {
             output_file = fopen(output_filename, "a+");
             if (output_file == NULL)
             {
-                fprintf(stderr, "[ERR]: opening output file\n");
+                fprintf(stderr, "[%s]: opening output file\n", ERR);
                 return 1;
             }
         }
+        // start perf before polling
         poll_stats(rb_map_fd);
     }
     else
     {
-        printf("[INFO]: Stats not enabled\n");
+        printf("[%s]: Stats not enabled\n", INFO);
         pause();
     }
+
+    // there is a remote possibility that the poll_stats function will return an error
+    // and the programm will end without calling init_exit function
+    // so we call it here
+    init_exit(0);
 
     return 0;
 }

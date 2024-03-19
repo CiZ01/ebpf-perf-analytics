@@ -20,6 +20,7 @@ struct record
     {                                                                                                                  \
         __uint(type, BPF_MAP_TYPE_RINGBUF);                                                                            \
         __uint(max_entries, 256 * 1024);                                                                               \
+        __uint(pinning, LIBBPF_PIN_BY_NAME);                                                                           \
     } ring_output SEC(".maps");
 
 #define BPF_MYKPERF_START_TRACE(sec_name, counter)                                                                     \
@@ -50,18 +51,10 @@ struct record
 
 // ----------------------------- SAMPLED TRACE -----------------------------
 #define BPF_MYKPERF_START_TRACE_SAMPLED(sec_name, counter, sample_rate)                                                \
-    __u8 sampled_##sec_name = 0;                                                                                       \
-    struct record *sec_name;                                                                                           \
+    struct record *sec_name = {0};                                                                                     \
     if (UNLIKELY(RAND_FN & sample_rate))                                                                               \
     {                                                                                                                  \
-        sampled_##sec_name = 1;                                                                                        \
         BPF_MYKPERF_START_TRACE(sec_name, counter)                                                                     \
-    }
-
-#define BPF_MYKPERF_END_TRACE_SAMPLED(sec_name, counter)                                                               \
-    if (UNLIKELY(sampled_##sec_name))                                                                       \
-    {                                                                                                                  \
-        BPF_MYKPERF_END_TRACE(sec_name, counter)                                                                       \
     }
 
 // ----------------------------- --- -----------------------------
