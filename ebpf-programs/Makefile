@@ -6,15 +6,21 @@ SUBDIRS := $(shell find . -mindepth 2 -type f -name 'Makefile' -exec dirname {} 
 SUBDIRS := $(sort $(SUBDIRS))
 SUBDIRS := $(filter-out ./,$(SUBDIRS))
 
-.PHONY: all $(SUBDIRS) clean
+.PHONY: all clean
 
-.SILENT: all
+.SILENT: all $(SUBDIRS)
 
 all: $(SUBDIRS)
 
 $(SUBDIRS):
 	@echo "Building $@..."
 	$(MAKE) -C $@ all
+
+# TODO TEST - I don't know if this will work
+load_module:
+	@echo "Loading module..."
+	$(MAKE) -C ../tracing-tools/xdp-introspection/kperf_ all
+	sudo $(MAKE) -C ../tracing-tools/xdp-introspection/kperf_ load
 
 clean:
 	@for dir in $(SUBDIRS); do \

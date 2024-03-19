@@ -185,6 +185,7 @@ void usage()
     printf("  -c                 : Enable run count\n");
     printf("  -o <output_filename> : Output filename\n");
     printf("  -v                 : Verbose\n");
+    printf("  -s                 : Supported metrics\n");
     printf("  -h                 : Print this help\n");
 }
 
@@ -238,7 +239,8 @@ static void print_accumulated_stats()
     // set locale to print numbers with dot as thousands separator
     setlocale(LC_NUMERIC, "");
 
-    float percentage;
+    float percentage = 0;
+    float avg_single_run = 0;
 
     fprintf(stdout, "\nAccumulated stats\n\n");
     for (int i = 0; i < selected_metrics_cnt; i++)
@@ -248,11 +250,18 @@ static void print_accumulated_stats()
         {
             if (strlen(selected_metrics[i].acc_persection[s].name) > 0)
             {
-                percentage = ((float)selected_metrics[i].acc_persection[s].run_cnt / run_cnt) * 100;
+
+                if (enable_run_cnt)
+                {
+                    avg_single_run = (float)selected_metrics[i].acc_persection[s].acc_value / run_cnt;
+                    percentage = ((float)selected_metrics[i].acc_persection[s].run_cnt / run_cnt) * 100;
+                }
+
                 fprintf(stdout, "[%s]: %s - %'llu runs\n", DEBUG, selected_metrics[i].acc_persection[s].name,
                         selected_metrics[i].acc_persection[s].run_cnt);
-                fprintf(stdout, "    %s: %'llu      (%.2f%%)\n\n", selected_metrics[i].acc_persection[s].name,
-                        selected_metrics[i].acc_persection[s].acc_value, percentage);
+                fprintf(stdout, "    %s: %'llu      (%.2f%%)    avg: %2.f/pkt\n\n",
+                        selected_metrics[i].acc_persection[s].name, selected_metrics[i].acc_persection[s].acc_value,
+                        percentage, avg_single_run);
             }
             else
             {
