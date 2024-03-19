@@ -579,7 +579,7 @@ static void poll_stats(unsigned int map_fd)
 int main(int arg, char **argv)
 {
     // set locale to print numbers with dot as thousands separator
-    setlocale(LC_NUMERIC, ".utf8");
+    setlocale(LC_NUMERIC, "");
 
     int rb_map_fd = -1;
     struct bpf_program *prog;
