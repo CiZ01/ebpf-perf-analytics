@@ -88,6 +88,7 @@ static __always_inline void set_ethhdr(struct ethhdr *new_eth, const struct ethh
 
 static __always_inline int handle_ipv4(struct xdp_md *xdp)
 {
+    BPF_MYKPERF_START_TRACE_SAMPLED(handle_ipv4_s, 0, 0x01);
     void *data_end = (void *)(long)xdp->data_end;
     void *data = (void *)(long)xdp->data;
     struct iptnl_info *tnl;
@@ -102,11 +103,17 @@ static __always_inline int handle_ipv4(struct xdp_md *xdp)
     int i;
 
     if (iph + 1 > data_end)
+    {
+        BPF_MYKPERF_END_TRACE(handle_ipv4_s, 0);
         return XDP_DROP;
+    }
 
     dport = get_dport(iph + 1, data_end, iph->protocol);
     if (dport == -1)
+    {
+        BPF_MYKPERF_END_TRACE(handle_ipv4_s, 0);
         return XDP_DROP;
+    }
 
     vip.protocol = iph->protocol;
     vip.family = AF_INET;
@@ -117,13 +124,18 @@ static __always_inline int handle_ipv4(struct xdp_md *xdp)
     tnl = bpf_map_lookup_elem(&vip2tnl, &vip);
     /* It only does v4-in-v4 */
     if (!tnl || tnl->family != AF_INET)
+    {
+        BPF_MYKPERF_END_TRACE(handle_ipv4_s, 0);
         return XDP_PASS;
+    }
 
     /* The vip key is found.  Add an IP header and send it out */
 
     if (bpf_xdp_adjust_head(xdp, 0 - (int)sizeof(struct iphdr)))
+    {
+        BPF_MYKPERF_END_TRACE(handle_ipv4_s, 0);
         return XDP_DROP;
-
+    }
     data = (void *)(long)xdp->data;
     data_end = (void *)(long)xdp->data_end;
 
@@ -132,7 +144,10 @@ static __always_inline int handle_ipv4(struct xdp_md *xdp)
     old_eth = data + sizeof(*iph);
 
     if (new_eth + 1 > data_end || old_eth + 1 > data_end || iph + 1 > data_end)
+    {
+        BPF_MYKPERF_END_TRACE(handle_ipv4_s, 0);
         return XDP_DROP;
+    }
 
     set_ethhdr(new_eth, old_eth, tnl, bpf_htons(ETH_P_IP));
 
@@ -155,7 +170,7 @@ static __always_inline int handle_ipv4(struct xdp_md *xdp)
     iph->check = ~((csum & 0xffff) + (csum >> 16));
 
     count_tx(vip.protocol);
-
+    BPF_MYKPERF_END_TRACE(handle_ipv4_s, 0);
     return XDP_TX;
 }
 
@@ -223,7 +238,6 @@ static __always_inline int handle_ipv6(struct xdp_md *xdp)
 SEC("xdp.frags")
 int _xdp_tx_iptunnel(struct xdp_md *xdp)
 {
-    BPF_MYKPERF_START_TRACE_SAMPLED(main, 0, 0x01);
     void *data_end = (void *)(long)xdp->data_end;
     void *data = (void *)(long)xdp->data;
     struct ethhdr *eth = data;
@@ -231,8 +245,6 @@ int _xdp_tx_iptunnel(struct xdp_md *xdp)
 
     if (eth + 1 > data_end)
         return XDP_DROP;
-
-    BPF_MYKPERF_END_TRACE(main, 0);
 
     h_proto = eth->h_proto;
 

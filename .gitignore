@@ -17,6 +17,7 @@ ebpf-programs/loader/loader
 
 #exclude skel
 *_skel.h
+*.skel.h
 
 # exclude kmodule build files
 *.mod

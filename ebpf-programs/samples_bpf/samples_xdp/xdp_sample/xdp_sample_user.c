@@ -8,7 +8,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <linux/ethtool.h>
-#include <linux/hashtable.h>
+#include "hashtable.h"
 #include <linux/if_link.h>
 #include <linux/jhash.h>
 #include <linux/limits.h>

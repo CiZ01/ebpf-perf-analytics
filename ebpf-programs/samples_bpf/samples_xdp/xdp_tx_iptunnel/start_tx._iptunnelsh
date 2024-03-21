@@ -1,6 +1,6 @@
 #! /bin/bash
 
-ifname=ens3fp0np0
+ifname=ens3f0np0
 vip_address=10.10.2.1
 ip_src=10.10.2.1
 ip_dst=10.10.2.2
