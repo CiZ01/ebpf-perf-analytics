@@ -241,15 +241,6 @@ static int start_perf(int n_cpus)
             perf_event_fds[cpu + i] = perf_fd;
         }
     }
-    for (int j = 0; j < n_cpus; j++)
-    {
-        printf("CPU[%d]:", j);
-        for (int i = 0; i < selected_metrics_cnt; i++)
-        {
-            // print fdm
-            fprintf(stdout, "[%s]: perf_event_fd: %d\n", DEBUG, perf_event_fds[j + i]);
-        }
-    }
     return 0;
 }
 
@@ -775,7 +766,7 @@ int main(int arg, char **argv)
     fprintf(stdout, "[%s]: Loaded object...\n", INFO);
 
     // get ring buffer if at least one metric is selected
-    if (1)
+    if (selected_metrics_cnt > 0)
     {
         if (load)
         {
@@ -882,7 +873,7 @@ int main(int arg, char **argv)
     }
 
     fprintf(stdout, "[%s]: Running... \nPress Ctrl+C to stop\n", INFO);
-    if (1)
+    if (selected_metrics_cnt > 0 && rb_map_fd > 0)
     {
         // TODO - Using file as output instead stdout may not work properly
         // I either fixed the problem or I forgot what it was :)
