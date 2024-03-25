@@ -85,9 +85,6 @@ int BPF_PROG(fentry_XXX)
     if (!ptr_my_value)
         return 0;
 
-    // my code
-    ptr_my_value->value = bpf_mykperf_read_rdpmc(0);
-
     /* look up before reading, to reduce error */
     ptr = bpf_map_lookup_elem(&fentry_readings, &zero);
     if (!ptr)
@@ -97,6 +94,12 @@ int BPF_PROG(fentry_XXX)
     if (err)
         return 0;
 
+    // my code
+    ptr_my_value->value = bpf_mykperf_read_rdpmc(0);
+
+    /*     bpf_printk("fentry_XXX: %lld\n", ptr->counter);
+        bpf_printk("my: %lld\n", ptr_my_value->value);
+     */
     return 0;
 }
 
@@ -118,6 +121,8 @@ static inline void fexit_update_maps(struct bpf_perf_event_value *after, struct 
         diff.enabled = after->enabled - before->enabled;
         diff.running = after->running - before->running;
 
+        bpf_printk("diff.counter: %lld\n", diff.counter);
+
         accum = bpf_map_lookup_elem(&accum_readings, &zero);
         if (accum)
         {
@@ -135,6 +140,8 @@ static inline void fexit_update_maps(struct bpf_perf_event_value *after, struct 
 
         my_diff.value = my_after->value - my_before->value;
 
+        bpf_printk("my_diff.value: %lld\n", my_diff.value);
+
         my_accum = bpf_map_lookup_elem(&my_accum_readings, &zero);
         if (my_accum)
         {
@@ -148,23 +155,33 @@ static inline void fexit_update_maps(struct bpf_perf_event_value *after, struct 
 SEC("fexit/XXX")
 int BPF_PROG(fexit_XXX)
 {
+
+    // my code | va bene un puntatore perché poi carico dentro la mappa per value,
+    // vedere update_maps
+    struct my_value_perf my_reading;
+
     struct bpf_perf_event_value reading;
     __u32 cpu = bpf_get_smp_processor_id();
     int err;
     __u32 zero = 0;
     // from bpftool
     __u64 *count;
-    // my code | va bene un puntatore perché poi carico dentro la mappa per value,
-    // vedere update_maps
-    struct my_value_perf my_reading;
 
     // my code
-    my_reading.value = bpf_mykperf_read_rdpmc(0);
-
     /* read all events before updating the maps, to reduce error */
+
+    //__u64 start, end;
+    // start = bpf_mykperf_read_rdpmc(0);
+    my_reading.value = bpf_mykperf_read_rdpmc(0);
+    // end = bpf_mykperf_read_rdpmc(0);
+
     err = bpf_perf_event_read_value(&events, cpu, &reading, sizeof(reading));
     if (err)
         return 0;
+
+    bpf_printk("my: %lld\n", my_reading.value);
+    bpf_printk("fexit_XXX: %lld\n", reading.counter);
+    // bpf_printk("costo 2 read event: %lld\n", end - start);
 
     // from bpftool
     count = bpf_map_lookup_elem(&counts, &zero);

@@ -28,7 +28,7 @@ __bpf_kfunc __u64 bpf_mykperf_read_rdpmc(__u8 counter__k)
 {
     __u32 low, high;
     mykperf_rdpmc(counter__k, low, high);
-    return ((__u64)high << 32) | low;
+    return ((__u32)high << 32) | (__u32)low;
 }
 
 BTF_SET8_START(bpf_task_set)
@@ -47,7 +47,7 @@ static int __init mykperf_module_init(void)
     // register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACEPOINT, &bpf_task_kfunc_set);
     // register_btf_kfunc_id_set(BPF_PROG_TYPE_KPROBE, &bpf_task_kfunc_set);
     // register_btf_kfunc_id_set(BPF_PROG_TYPE_RAW_TRACEPOINT, &bpf_task_kfunc_set);
-    // register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING, &bpf_task_kfunc_set);
+    register_btf_kfunc_id_set(BPF_PROG_TYPE_TRACING, &bpf_task_kfunc_set);
 
     pr_info("kfunc registerd with success\n");
     return 0;

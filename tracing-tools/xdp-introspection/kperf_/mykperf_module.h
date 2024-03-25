@@ -3,17 +3,30 @@
 
 #define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#define LIKELY(x) __builtin_expect(!!(x), 1)
 
 #define RAND_FN bpf_get_prandom_u32()
 
 struct record
 {
     __u64 value;
-    char name[16];
+    char name[15];
     __u8 type_counter;
 };
 
 #ifdef TRACE
+// from https://github.com/torvalds/linux/blob/master/tools/testing/selftests/bpf/progs/ringbuf_bench.c#L22-L31
+#define MANUAL_WAKEUP(max_events_before_wakeup)                                                                        \
+    const volatile long wakeup_data_size = max_events_before_wakeup;                                                   \
+    static __always_inline long get_flags()                                                                            \
+    {                                                                                                                  \
+        long sz;                                                                                                       \
+        if (!wakeup_data_size)                                                                                         \
+            return 0;                                                                                                  \
+        sz = bpf_ringbuf_query(&ringbuf, BPF_RB_AVAIL_DATA);                                                           \
+        return sz >= wakeup_data_size ? BPF_RB_FORCE_WAKEUP : BPF_RB_NO_WAKEUP;                                        \
+    }
+
 #define BPF_MYKPERF_INIT_TRACE()                                                                                       \
     __u64 bpf_mykperf_read_rdpmc(__u8 counter) __ksym;                                                                 \
     struct                                                                                                             \
@@ -23,13 +36,15 @@ struct record
         __uint(pinning, LIBBPF_PIN_BY_NAME);                                                                           \
     } ring_output SEC(".maps");
 
+// remove definition of sec_name to use sampled version
 #define BPF_MYKPERF_START_TRACE(sec_name, counter)                                                                     \
+    struct record *sec_name = {0};                                                                                     \
     sec_name = bpf_ringbuf_reserve(&ring_output, sizeof(struct record), 0);                                            \
     if (sec_name)                                                                                                      \
     {                                                                                                                  \
-        sec_name->value = bpf_mykperf_read_rdpmc(counter);                                                             \
         memcpy(sec_name->name, #sec_name, sizeof(sec_name->name));                                                     \
         sec_name->type_counter = counter;                                                                              \
+        sec_name->value = bpf_mykperf_read_rdpmc(counter);                                                             \
     }                                                                                                                  \
     else                                                                                                               \
     {                                                                                                                  \
@@ -45,9 +60,12 @@ struct record
 
 // should not work
 #define BPF_MYKPERF_END_TRACE_VERBOSE(sec_name, counter)                                                               \
-    sec_name = bpf_mykperf_read_rdpmc(counter) - sec_name->value;                                                      \
-    bpf_ringbuf_output(&ring_output, &sec_name, sizeof(sec_name), BPF_RB_FORCE_WAKEUP);                                \
-    bpf_printk("[PERF] %s: %lld\n", #sec_name, sec_name->value);
+    if (sec_name)                                                                                                      \
+    {                                                                                                                  \
+        sec_name->value = bpf_mykperf_read_rdpmc(counter) - sec_name->value;                                           \
+        bpf_printk("[PERF] %s: %lld\n", #sec_name, sec_name->value);                                                   \
+        bpf_ringbuf_submit(sec_name, 0);                                                                               \
+    }
 
 // ----------------------------- SAMPLED TRACE -----------------------------
 #define BPF_MYKPERF_START_TRACE_SAMPLED(sec_name, counter, sample_rate)                                                \
