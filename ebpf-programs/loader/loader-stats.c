@@ -23,8 +23,12 @@
 #include <linux/perf_event.h>
 #include <sys/ioctl.h>
 
+// profiler
 #include "profiler/profiler.skel.h"
 #include "mykperf_module.h"
+
+// plot
+#include "gnuplot/gplot.h"
 
 // --- PRETTY PRINT -----
 #define ERR "\033[1;31mERR\033[0m"
@@ -156,6 +160,10 @@ int n_cpus;
 int *perf_event_fds;
 struct ring_buffer *rb;
 
+// plot
+int do_plot;
+struct gnuplot_cfg *plot_cfg;
+
 // profiler
 static struct profiler *profile_obj;
 int enable_run_cnt;
@@ -165,15 +173,14 @@ __u64 run_cnt;
 FILE *output_file;
 char *output_filename;
 
+// DEBUG
+int x;
+
 struct profile_metric selected_metrics[MAX_METRICS];
 int selected_metrics_cnt;
 
 // TODO - acc fn
 int accumulate;
-
-// TODO - it's not seem useful for now
-// how much run to wait before printing accumulated stats
-// int acc_period;
 
 void usage()
 {
@@ -270,14 +277,6 @@ static void print_accumulated_stats()
                 fprintf(stdout, "    %s: %'llu      (%.2f%%)    avg: %2.f/pkt\n\n",
                         selected_metrics[i].acc_persection[s].name, selected_metrics[i].acc_persection[s].acc_value,
                         percentage, avg_single_run);
-                if (output_file)
-                {
-                    fprintf(output_file, "[%s]: %s - %'llu runs\n", DEBUG, selected_metrics[i].acc_persection[s].name,
-                            selected_metrics[i].acc_persection[s].run_cnt);
-                    fprintf(output_file, "    %s: %'llu      (%.2f%%)    avg: %2.f/pkt\n\n",
-                            selected_metrics[i].acc_persection[s].name, selected_metrics[i].acc_persection[s].acc_value,
-                            percentage, avg_single_run);
-                }
             }
             else
             {
@@ -380,27 +379,68 @@ static void init_exit(int sig)
         if (ifindex == 0)
         {
             fprintf(stderr, "[%s]: getting ifindex during detaching\n", ERR);
-            exit(1);
         }
-
-        // get in current prog id the xdp program attached to the interface
-        // until we find a way to manage multiple prog id this is not working
-        /*     if (bpf_xdp_query_id(ifindex, xdp_flags, &curr_prog_id))
-            {
-                printf("[ERR]: bpf_xdp_query_id failed\n");
-                exit(1);
-            } */
-
-        if (bpf_xdp_detach(ifindex, xdp_flags, NULL))
+        else
         {
-            fprintf(stderr, "%s: bpf_xdp_detach failed\n", ERR);
-            exit(1);
+            // get in current prog id the xdp program attached to the interface
+            // until we find a way to manage multiple prog id this is not working
+            /*     if (bpf_xdp_query_id(ifindex, xdp_flags, &curr_prog_id))
+                {
+                    printf("[ERR]: bpf_xdp_query_id failed\n");
+                    exit(1);
+                } */
+
+            if (bpf_xdp_detach(ifindex, xdp_flags, NULL))
+            {
+                fprintf(stderr, "%s: bpf_xdp_detach failed\n", ERR);
+            }
         }
     }
 
+    // free plot_cfg
+    if (do_plot)
+    {
+        gplot_close();
+        free(plot_cfg);
+    }
     bpf_object__close(obj);
     fprintf(stdout, "[%s]: Done \n", INFO);
     exit(0);
+}
+
+void moving_avg(FILE *file_data)
+{
+    time_t t;
+    time(&t);
+    struct tm *tm;
+    char ts[32];
+    tm = localtime(&t);
+    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+    char value[16];
+    char data[64];
+    x++;
+    // add time to data
+    snprintf(data, 64, "%d", x);
+    for (int s = 0; s < MAX_MEASUREMENT; s++)
+    {
+        for (int m = 0; m < selected_metrics_cnt; m++)
+        {
+            if (strlen(selected_metrics[m].acc_persection[s].name) != 0)
+            {
+                snprintf(value, sizeof(value), " %.2f",
+                         (float)selected_metrics[m].acc_persection[s].acc_value /
+                             selected_metrics[m].acc_persection[s].run_cnt);
+                strcat(data, value);
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+    fprintf(file_data, "%s\n", data);
+    fflush(file_data);
+    return;
 }
 
 // accumulate stats
@@ -522,11 +562,6 @@ static int attach_prog(struct bpf_program *prog)
 
 static int handle_event(void *ctx, void *data, size_t len)
 {
-    if (accumulate)
-    {
-        accumulate_stats(data);
-        return 0;
-    }
     struct record *sample = data;
     struct tm *tm;
     char ts[32];
@@ -540,17 +575,47 @@ static int handle_event(void *ctx, void *data, size_t len)
     {
         fprintf(output_file, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample->type_counter].name,
                 sample->value, sample->name);
+    }
+
+    if (accumulate)
+    {
+        accumulate_stats(data);
         return 0;
     }
-    fprintf(stdout, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample->type_counter].name, sample->value,
-            sample->name);
-    fflush(stdout);
+
+    if (!output_file)
+    {
+
+        fprintf(stdout, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample->type_counter].name, sample->value,
+                sample->name);
+        fflush(stdout);
+    }
     return 0;
 }
 
 static void poll_stats(unsigned int map_fd)
 {
     int err;
+
+    time_t start_time = time(NULL);
+    time_t current_time;
+
+    // start plot process
+    if (do_plot)
+    {
+        pid_t plot_pid = fork();
+        if (plot_pid == 0)
+        {
+            // child process
+            gplot_plot_poll();
+            exit(0);
+        }
+        else if (plot_pid < 0)
+        {
+            fprintf(stderr, "[%s]: forking plot process\n", ERR);
+            init_exit(0);
+        }
+    }
 
     //// FIX - when a new ring buffer is opened, it receives the data that was not read previous
     rb = ring_buffer__new(map_fd, handle_event, NULL, NULL);
@@ -580,18 +645,27 @@ static void poll_stats(unsigned int map_fd)
             fprintf(stdout, "[%s]: consumed %d events before start\n", INFO, n);
     }
 
-    // TODO - see how timeout works
     while (ring_buffer__poll(rb, 1000) >= 0)
     {
+        if (do_plot)
+        {
+            current_time = time(NULL);
+            if (current_time - start_time > plot_cfg->poll_interval)
+            {
+                moving_avg(plot_cfg->fp);
+                start_time = current_time;
+            }
+        }
     }
 
     // this could be an alternative to ring_buffer__poll
     // should improve notification adaptation, but needs to be tested
-    /*while (1)
-    {
-        ring_buffer__consume(rb);
-        sleep(timeout);
-    }*/
+    // int timeout = 10;
+    // while (2)
+    //{
+    //    ring_buffer__consume(rb);
+    //    sleep(timeout);
+    //}
 }
 
 int main(int arg, char **argv)
@@ -606,9 +680,11 @@ int main(int arg, char **argv)
     load = 0;
     prog_name = NULL;
     info_len = sizeof(info);
+    plot_cfg = malloc(sizeof(struct gnuplot_cfg));
+    x = 0;
 
     // retrieve opt
-    while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:hsvlc")) != -1)
+    while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:hsvlcx")) != -1)
     {
         switch (opt)
         {
@@ -669,6 +745,10 @@ int main(int arg, char **argv)
         case 'o':
             output_filename = optarg;
             break;
+        // find a appropriate name for this
+        case 'x':
+            do_plot = 1;
+            break;
         case 'v':
             verbose = 1;
             break;
@@ -701,7 +781,7 @@ int main(int arg, char **argv)
         return 1;
     }
 
-    // if almost one metric is selected, allocate perf_event_fds
+    // if at least one metric is selected, allocate perf_event_fds
     if (selected_metrics_cnt > 0)
     {
         perf_event_fds = malloc((selected_metrics_cnt * n_cpus) * sizeof(int));
@@ -805,6 +885,32 @@ int main(int arg, char **argv)
         return 1;
     }
 
+    // if user wants plot, do it
+    if (do_plot)
+    {
+        char *plot_filename = "tmp_data.txt";
+        char *plot_title = "Metrics";
+
+        // plot config
+        memcpy(plot_cfg->filename, plot_filename, strlen(plot_filename));
+        memcpy(plot_cfg->title, plot_title, strlen(plot_title));
+        plot_cfg->poll_interval = 1;
+
+        time_t t;
+        time(&t);
+
+        // plot init
+        err = gplot_init(plot_cfg);
+        if (err || !plot_cfg->fp)
+        {
+            fprintf(stderr, "[%s]: initializing plot\n", ERR);
+            init_exit(0);
+            return 1;
+        }
+
+        // see handle_event function for data writing
+    }
+
     // do attach
     int i_prog = 0;
     if (load)
@@ -879,7 +985,7 @@ int main(int arg, char **argv)
         // I either fixed the problem or I forgot what it was :)
         if (output_filename)
         {
-            output_file = fopen(output_filename, "a+");
+            output_file = fopen(output_filename, "w");
             if (output_file == NULL)
             {
                 fprintf(stderr, "[%s]: opening output file\n", ERR);
