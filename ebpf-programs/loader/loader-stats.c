@@ -292,10 +292,11 @@ static void print_accumulated_stats()
 }
 
 // from bpftool
-static int prog_fd_by_nametag(void *nametag, int *fd)
+static int prog_fd_by_nametag(char nametag[15])
 {
     unsigned int id = 0;
     int err;
+    int fd = -1;
 
     while (true)
     {
@@ -312,28 +313,27 @@ static int prog_fd_by_nametag(void *nametag, int *fd)
             return -1;
         }
 
-        *fd = bpf_prog_get_fd_by_id(id);
+        fd = bpf_prog_get_fd_by_id(id);
         if (fd < 0)
         {
             fprintf(stderr, "[%s]: can't get prog fd (%u): %s", ERR, id, strerror(errno));
             return -1;
         }
 
-        err = bpf_prog_get_info_by_fd(*fd, &info, &len);
+        err = bpf_prog_get_info_by_fd(fd, &info, &len);
         if (err)
         {
             fprintf(stderr, "[%s]: can't get prog info by fd (%u): %s", ERR, id, strerror(errno));
             return -1;
         }
 
-        if (strncmp(nametag, info.name, sizeof(info.name)))
+        if (strncmp(nametag, info.name, sizeof(info.name)) == 0)
         {
-            // TODO - FIX if nametag not exist, this pick the first one
             break;
         }
     }
 
-    return 0;
+    return fd;
 }
 
 static void init_exit(int sig)
@@ -1006,8 +1006,8 @@ int main(int arg, char **argv)
     else // if not loaded by this tool, retrieve prog fd
     {
         // retrieve prog fd
-        err = prog_fd_by_nametag(func_name, &prog_fd);
-        if (err)
+        prog_fd = prog_fd_by_nametag(func_name);
+        if (prog_fd < 0)
         {
             fprintf(stderr, "[%s]: retrieving prog fd for program name: %s\n", ERR, func_name);
             return 1;
