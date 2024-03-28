@@ -56,6 +56,13 @@ struct record
         bpf_ringbuf_submit(sec_name, get_flags());                                                                     \
     }
 
+#define BPF_MYKPERF_DISCARD_TRACE(sec_name, counter)                                                                   \
+    if (sec_name)                                                                                                      \
+    {                                                                                                                  \
+        sec_name->value = 0;                                                                                           \
+        bpf_ringbuf_submit(sec_name, get_flags());                                                                     \
+    }
+
 // should not work
 #define BPF_MYKPERF_END_TRACE_VERBOSE(sec_name, counter)                                                               \
     if (sec_name)                                                                                                      \
@@ -81,6 +88,7 @@ struct record
 #define BPF_MYKPERF_END_TRACE(sec_name, counter)
 #define BPF_MYKPERF_END_TRACE_VERBOSE(sec_name, counter)
 #define BPF_MYKPERF_START_TRACE_SAMPLED(sec_name, counter, sample_rate)
+#define BPF_MYKPERF_DISCARD_TRACE(sec_name, counter)
 #define BPF_MYKPERF_END_TRACE_SAMPLED(sec_name, counter)
 #endif
 

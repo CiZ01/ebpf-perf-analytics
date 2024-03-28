@@ -144,6 +144,8 @@ struct profile_metric
     },
 };
 
+#define MAX_PROG_FULL_NAME 15
+
 struct bpf_object *obj;
 int xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
 int verbose;
@@ -153,6 +155,7 @@ struct bpf_prog_info info;
 __u32 info_len;
 int prog_fd;
 int prog_id;
+char func_name[15];
 char filename[256];
 char *prog_name;
 char *ifname;
@@ -186,7 +189,7 @@ void usage()
 {
     printf("Usage: loader-stats -i <ifname> -f <filename> -m <mode>\n");
     printf("  -f <filename>        : BPF object file to load\n");
-    printf("  -n <prog id>         : Program id (only for programs already loaded)\n");
+    printf("  -n <func name>       : XDP function name (only for programs already loaded)\n");
     printf("  -i <ifname>          : Interface name\n");
     printf("  -m <mode>            : xdp mode (skb, native)\n");
     // -P not work properly
@@ -286,6 +289,51 @@ static void print_accumulated_stats()
             }
         }
     }
+}
+
+// from bpftool
+static int prog_fd_by_nametag(void *nametag, int *fd)
+{
+    unsigned int id = 0;
+    int err;
+
+    while (true)
+    {
+        struct bpf_prog_info info = {};
+        __u32 len = sizeof(info);
+
+        err = bpf_prog_get_next_id(id, &id);
+        if (err)
+        {
+            if (errno != ENOENT)
+            {
+                fprintf(stderr, "[%s]: can't get next prog id: %s", ERR, strerror(errno));
+            }
+            return -1;
+        }
+
+        *fd = bpf_prog_get_fd_by_id(id);
+        if (fd < 0)
+        {
+            fprintf(stderr, "[%s]: can't get prog fd (%u): %s", ERR, id, strerror(errno));
+            return -1;
+        }
+
+        err = bpf_prog_get_info_by_fd(*fd, &info, &len);
+        if (err)
+        {
+            fprintf(stderr, "[%s]: can't get prog info by fd (%u): %s", ERR, id, strerror(errno));
+            return -1;
+        }
+
+        if (strncmp(nametag, info.name, sizeof(info.name)))
+        {
+            // TODO - FIX if nametag not exist, this pick the first one
+            break;
+        }
+    }
+
+    return 0;
 }
 
 static void init_exit(int sig)
@@ -728,7 +776,7 @@ int main(int arg, char **argv)
             strcpy(filename, optarg);
             break;
         case 'n':
-            prog_id = atoi(optarg);
+            strcpy(func_name, optarg);
             break;
         case 'l':
             load = 1;
@@ -766,18 +814,29 @@ int main(int arg, char **argv)
     }
 
     // check mandatory opt
-    if (!strlen(filename) || !strlen(ifname))
+    if (!(strlen(filename) || strlen(func_name)) || !strlen(ifname))
     {
         usage();
         return 1;
     }
 
     // check mutual exclusive opt
-    if (load && prog_id)
+    if (strlen(filename) > 0 && strlen(func_name) > 0)
     {
-        fprintf(stderr,
-                "[%s]: -n is used to retrieve statistics from an already loaded program, use -l to load a program\n",
-                ERR);
+        fprintf(
+            stderr,
+            "[%s]: -n is used to retrieve statistics from an already loaded program, use -l and -f to load a program\n",
+            ERR);
+        return 1;
+    }
+
+    // check mutual exclusive opt
+    if (load && strlen(func_name) > 0)
+    {
+        fprintf(
+            stderr,
+            "[%s]: -n is used to retrieve statistics from an already loaded program, use -l and -f to load a program\n",
+            ERR);
         return 1;
     }
 
@@ -812,14 +871,14 @@ int main(int arg, char **argv)
         }
     }
 
-    // get obj
-    obj = bpf_object__open_file(filename, NULL);
-    if (libbpf_get_error(obj))
-        return 1;
-
     // load obj
     if (load)
     {
+        // get obj
+        obj = bpf_object__open_file(filename, NULL);
+        if (libbpf_get_error(obj))
+            return 1;
+
         // set prog type
         bpf_object__for_each_program(prog, obj)
         {
@@ -908,6 +967,9 @@ int main(int arg, char **argv)
             return 1;
         }
 
+        fprintf(plot_cfg->fp, "1 1\n2 2\n");
+        fflush(plot_cfg->fp);
+
         // see handle_event function for data writing
     }
 
@@ -944,10 +1006,10 @@ int main(int arg, char **argv)
     else // if not loaded by this tool, retrieve prog fd
     {
         // retrieve prog fd
-        prog_fd = bpf_prog_get_fd_by_id(prog_id);
-        if (prog_fd < 0)
+        err = prog_fd_by_nametag(func_name, &prog_fd);
+        if (err)
         {
-            fprintf(stderr, "[%s]: retrieving prog fd for program id: %d\n", ERR, prog_id);
+            fprintf(stderr, "[%s]: retrieving prog fd for program name: %s\n", ERR, func_name);
             return 1;
         }
 
