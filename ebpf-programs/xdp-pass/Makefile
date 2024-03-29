@@ -11,7 +11,7 @@ all: build build_trace
 
 build: $(TARGET) #$(TARGET)_skel $(TARGET_USER) $(TARGET_TEST)_run
 
-build_trace: $(TARGET)_trace #$(TARGET)_trace_skel $(TARGET_USER)_trace $(TARGET_TEST)_trace_run
+build_trace: $(TARGET)_trace $(TARGET)_trace_skel $(TARGET_USER)_trace #$(TARGET_TEST)_trace_run
 
 
 
@@ -40,7 +40,7 @@ $(TARGET_USER):
 
 $(TARGET_USER)_trace:
 	@echo "[INFO]: Compiling $(TARGET_USER)"
-	gcc -Wall -g -O2 $(TARGET_USER).c -o $(TARGET_USER)_trace.o -lbpf -DTRACE=1
+	gcc -Wall -g -O2 -I$(KHEADER) $(TARGET_USER)_array.c -o $(TARGET_USER)_trace_array.o -lbpf -DTRACE=1
 # ------------------- USER SPACE PROG RUN ----------------------------
 $(TARGET_TEST)_run:
 	@echo "[INFO]: Compiling $(TARGET_TEST)"

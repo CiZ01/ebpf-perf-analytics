@@ -145,6 +145,7 @@ struct profile_metric
 };
 
 #define MAX_PROG_FULL_NAME 15
+#define NS_PER_SECOND 1000000000
 
 struct bpf_object *obj;
 int xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST;
@@ -162,6 +163,13 @@ char *ifname;
 int n_cpus;
 int *perf_event_fds;
 struct ring_buffer *rb;
+
+// time variables
+struct timespec start_running_time;
+struct timespec end_running_time;
+struct timespec delta;
+
+int throw_away_events;
 
 // plot
 int do_plot;
@@ -291,6 +299,22 @@ static void print_accumulated_stats()
     }
 }
 
+void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
+{
+    td->tv_nsec = t2.tv_nsec - t1.tv_nsec;
+    td->tv_sec = t2.tv_sec - t1.tv_sec;
+    if (td->tv_sec > 0 && td->tv_nsec < 0)
+    {
+        td->tv_nsec += NS_PER_SECOND;
+        td->tv_sec--;
+    }
+    else if (td->tv_sec < 0 && td->tv_nsec > 0)
+    {
+        td->tv_nsec -= NS_PER_SECOND;
+        td->tv_sec++;
+    }
+}
+
 // from bpftool
 static int prog_fd_by_nametag(char nametag[15])
 {
@@ -338,6 +362,10 @@ static int prog_fd_by_nametag(char nametag[15])
 
 static void init_exit(int sig)
 {
+    // read end timestamp
+    clock_gettime(CLOCK_MONOTONIC, &end_running_time);
+    sub_timespec(start_running_time, end_running_time, &delta);
+
     // consume remaining events
     if (rb)
     {
@@ -411,6 +439,17 @@ static void init_exit(int sig)
     {
         print_accumulated_stats();
     }
+
+    // print delta time
+    fprintf(stdout, "[%s]: Elapsed time: %d.%09ld\n", INFO, (int)delta.tv_sec, delta.tv_nsec);
+    // print delta time from loading
+
+    if (info.run_time_ns > 0) // this work only with bpf_stats enabled
+        fprintf(stdout, "[%s]: Elapsed time from loading: %d.%09lld\n", INFO, (int)info.run_time_ns / NS_PER_SECOND,
+                info.run_time_ns % NS_PER_SECOND);
+
+    if (run_cnt)
+        fprintf(stdout, "[%s]: Troughtput: %d.%09lld\n", INFO, (int)(run_cnt / delta.tv_sec), run_cnt / delta.tv_nsec);
 
     // after read, free acc_persection
     for (int i = 0; i < selected_metrics_cnt; i++)
@@ -610,6 +649,10 @@ static int attach_prog(struct bpf_program *prog)
 
 static int handle_event(void *ctx, void *data, size_t len)
 {
+
+    if (throw_away_events)
+        return 0;
+
     struct record *sample = data;
     struct tm *tm;
     char ts[32];
@@ -691,6 +734,8 @@ static void poll_stats(unsigned int map_fd)
     {
         if (verbose) // if verbose is set, print the number of consumed events
             fprintf(stdout, "[%s]: consumed %d events before start\n", INFO, n);
+        // run_cnt += n; I prefer to throw away the events
+        throw_away_events = 0;
     }
 
     while (ring_buffer__poll(rb, 1000) >= 0)
@@ -730,6 +775,7 @@ int main(int arg, char **argv)
     info_len = sizeof(info);
     plot_cfg = malloc(sizeof(struct gnuplot_cfg));
     x = 0;
+    throw_away_events = 1;
 
     // retrieve opt
     while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:hsvlcx")) != -1)
@@ -1039,6 +1085,9 @@ int main(int arg, char **argv)
         }
         fprintf(stdout, "[%s]: Program name: %s\n", DEBUG, info.name);
     }
+
+    // read first timestamp
+    clock_gettime(CLOCK_MONOTONIC, &start_running_time);
 
     fprintf(stdout, "[%s]: Running... \nPress Ctrl+C to stop\n", INFO);
     if (selected_metrics_cnt > 0 && rb_map_fd > 0)

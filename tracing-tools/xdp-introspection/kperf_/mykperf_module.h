@@ -6,6 +6,7 @@
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 
 #define RAND_FN bpf_get_prandom_u32()
+#define MAX_ENTRIES_PERCPU_ARRAY 64 << 10
 
 struct record
 {
@@ -24,6 +25,25 @@ struct record
         __uint(max_entries, 256 * 1024);                                                                               \
         __uint(pinning, LIBBPF_PIN_BY_NAME);                                                                           \
     } ring_output SEC(".maps");                                                                                        \
+                                                                                                                       \
+    struct                                                                                                             \
+    {                                                                                                                  \
+        __uint(type, BPF_MAP_TYPE_ARRAY);                                                                              \
+        __type(key, __u32);                                                                                            \
+        __type(value, struct record);                                                                                  \
+        __uint(max_entries, MAX_ENTRIES_PERCPU_ARRAY);                                                                 \
+        __uint(pinning, LIBBPF_PIN_BY_NAME);                                                                           \
+    } percpu_output SEC(".maps");                                                                                      \
+                                                                                                                       \
+    struct                                                                                                             \
+    {                                                                                                                  \
+        __uint(type, BPF_MAP_TYPE_ARRAY);                                                                              \
+        __type(key, __u32);                                                                                            \
+        __type(value, __u32);                                                                                          \
+        __uint(max_entries, 2);                                                                                        \
+        __uint(pinning, LIBBPF_PIN_BY_NAME);                                                                           \
+    } pos SEC(".maps");                                                                                                \
+                                                                                                                       \
     const volatile long wakeup_data_size = max_events_before_wakeup;                                                   \
     static __always_inline long get_flags()                                                                            \
     {                                                                                                                  \
@@ -72,6 +92,34 @@ struct record
         bpf_ringbuf_submit(sec_name, get_flags());                                                                     \
     }
 
+#define BPF_MYKPERF_START_TRACE_ARRAY(sec_name, counter)                                                               \
+    struct record *sec_name = {0};                                                                                     \
+    __u32 key = 0;                                                                                                     \
+    __u32 *pos_key = bpf_map_lookup_elem(&pos, &key);                                                                  \
+    if (pos_key)                                                                                                       \
+    {                                                                                                                  \
+        sec_name = bpf_map_lookup_elem(&percpu_output, pos_key);                                                       \
+        if (sec_name)                                                                                                  \
+        {                                                                                                              \
+            __sync_fetch_and_add(&sec_name->value, bpf_mykperf_read_rdpmc(counter));                                   \
+        }                                                                                                              \
+    }
+
+#define BPF_MYKPERF_END_TRACE_ARRAY(sec_name, counter)                                                                 \
+    if (sec_name)                                                                                                      \
+    {                                                                                                                  \
+        __sync_fetch_and_add(&sec_name->value, (bpf_mykperf_read_rdpmc(counter) - sec_name->value));                   \
+        if ((*pos_key + 1) % MAX_ENTRIES_PERCPU_ARRAY)                                                                 \
+        {                                                                                                              \
+            __sync_fetch_and_add(pos_key, 1);                                                                          \
+        }                                                                                                              \
+        else                                                                                                           \
+        {                                                                                                              \
+            __sync_fetch_and_add(pos_key, -(*pos_key));                                                                \
+        }                                                                                                              \
+        bpf_printk("[PERF] %s: %lld\n", #sec_name, sec_name->value);                                                   \
+    }
+
 // ----------------------------- SAMPLED TRACE -----------------------------
 #define BPF_MYKPERF_START_TRACE_SAMPLED(sec_name, counter, sample_rate)                                                \
     struct record *sec_name = {0};                                                                                     \
@@ -90,6 +138,8 @@ struct record
 #define BPF_MYKPERF_START_TRACE_SAMPLED(sec_name, counter, sample_rate)
 #define BPF_MYKPERF_DISCARD_TRACE(sec_name, counter)
 #define BPF_MYKPERF_END_TRACE_SAMPLED(sec_name, counter)
+#define BPF_MYKPERF_START_TRACE_ARRAY(sec_name, counter)
+#define BPF_MYKPERF_END_TRACE_ARRAY(sec_name, counter)
 #endif
 
 #endif // MYKEPERF_MODULE_H
