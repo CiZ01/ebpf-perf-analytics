@@ -10,52 +10,32 @@
 #include <signal.h>
 #include <linux/if_link.h>
 #include <net/if.h>
-#include "xdp_pass_kern_trace_skel.h"
+#include "xdp_pass_kern_trace_rb_skel.h"
 
 #include "mykperf_module.h"
 
 struct record *values;
-__u64 *keys;
-__u32 batch, count = 32;
-struct xdp_pass_kern_trace *skel;
-__u32 *cons_key;
-__u32 *prod_key;
+struct xdp_pass_kern_trace_rb *skel;
 int ifindex;
+
+struct ring_buffer *rb;
 
 static void cleanup(int x)
 {
     bpf_xdp_detach(ifindex, XDP_FLAGS_SKB_MODE | XDP_FLAGS_UPDATE_IF_NOEXIST, 0);
-    xdp_pass_kern_trace__destroy(skel);
+    xdp_pass_kern_trace_rb__destroy(skel);
 
-    free(keys);
-    free(values);
+    ring_buffer__free(rb);
     exit(0);
 }
 
-static int array_polling(int map_fd, int timeout_ms)
+static int handle_event(void *ctx, void *data, size_t size)
 {
-    __u32 zero = 0;
-    struct record *rec = {0};
-    int err;
-    for (;;)
-    {
-        err = bpf_map_lookup_elem(map_fd, &zero, rec);
-        if (err)
-        {
-            fprintf(stderr, "Failed to lookup element: %d\n", err);
-            continue;
-        }
+    struct record *rec = data;
 
-        if (strlen(rec->name))
-        {
-            continue;
-        }
-        fprintf(stdout, "Name: %s\n", rec->name);
-        fprintf(stdout, "Value: %llu", rec->value);
-        fprintf(stdout, "Type: %u", rec->type_counter);
-
-        usleep(timeout_ms / 1000);
-    }
+    fprintf(stdout, "Name: %s\n", rec->name);
+    fprintf(stdout, "Value: %llu", rec->value);
+    fprintf(stdout, "Type: %u", rec->type_counter);
     return 0;
 }
 
@@ -79,14 +59,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    skel = xdp_pass_kern_trace__open();
+    skel = xdp_pass_kern_trace_rb__open();
     if (!skel)
     {
         fprintf(stderr, "Failed to open BPF object\n");
         return 1;
     }
 
-    err = xdp_pass_kern_trace__load(skel);
+    err = xdp_pass_kern_trace_rb__load(skel);
     if (err)
     {
         fprintf(stderr, "Failed to load BPF object: %d\n", err);
@@ -101,7 +81,23 @@ int main(int argc, char **argv)
 
     printf("Successfully started BPF program\n");
 
-    array_polling(bpf_map__fd(skel->maps.percpu_output), 5000);
+    rb = ring_buffer__new(bpf_map__fd(skel->maps.rb_map), handle_event, NULL, NULL);
+    if (!rb)
+    {
+        fprintf(stderr, "Failed to create ring buffer\n");
+        return 1;
+    }
+
+    int n;
+    while (1)
+    {
+        n = ring_buffer__consume(rb);
+        if (n < 0)
+        {
+            fprintf(stderr, "Failed to consume ring buffer\n");
+        }
+        sleep(2);
+    }
 
     cleanup(0);
     return 0;

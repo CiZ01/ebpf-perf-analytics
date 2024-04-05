@@ -26,9 +26,9 @@ static __u64 mykperf_read_rdpmc(__u8 counter__k, __u32 low, __u32 high)
 
 __bpf_kfunc __u64 bpf_mykperf_read_rdpmc(__u8 counter__k)
 {
-    __u32 low, high;
-    mykperf_rdpmc(counter__k, low, high);
-    return ((__u32)high << 32) | (__u32)low;
+    __u64 ret = 0;
+    rdpmcl(counter__k, ret);
+    return ret;
 }
 
 BTF_SET8_START(bpf_task_set)

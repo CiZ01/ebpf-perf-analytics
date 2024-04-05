@@ -162,9 +162,7 @@ char *prog_name;
 char *ifname;
 int n_cpus;
 int *perf_event_fds;
-struct record_array *data;
-int array_map_fd;
-int firtst_offline_cpu;
+struct ring_buffer *rb;
 
 // time variables
 struct timespec start_running_time;
@@ -184,7 +182,7 @@ __u64 run_cnt;
 
 // output file
 FILE *output_file;
-char output_filename[256];
+char *output_filename;
 
 // DEBUG
 int x;
@@ -239,11 +237,6 @@ static int start_perf(int n_cpus)
             {
                 if (errno == ENODEV)
                 {
-                    // I don't know if this is the best way to handle this
-                    if (firtst_offline_cpu == -1)
-                    {
-                        firtst_offline_cpu = cpu;
-                    }
                     if (verbose)
                     {
                         fprintf(stderr, "[%s]: cpu: %d may be offline\n", WARN, cpu);
@@ -367,110 +360,26 @@ static int prog_fd_by_nametag(char nametag[15])
     return fd;
 }
 
-// accumulate stats
-void accumulate_stats(struct record_array *sample)
-{
-    if (sample->type_counter >= selected_metrics_cnt)
-    {
-        return;
-    }
-
-    // find section if exists
-    for (int s = 0; s < MAX_MEASUREMENT; s++)
-    {
-        // if the section is null, we can create a new one and stop the loop
-        if (strlen(selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
-        {
-            strcpy(selected_metrics[sample->type_counter].acc_persection[s].name, sample->name);
-            selected_metrics[sample->type_counter].acc_persection[s].acc_value = sample->value;
-            selected_metrics[sample->type_counter].acc_persection[s].run_cnt = sample->run_cnt;
-            return;
-        }
-
-        // if the section exists, we can accumulate the value and stop the loop
-        if (strcmp(sample->name, selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
-        {
-            selected_metrics[sample->type_counter].acc_persection[s].acc_value = sample->value;
-            selected_metrics[sample->type_counter].acc_persection[s].run_cnt = sample->run_cnt;
-            return;
-        }
-    }
-
-    return;
-}
-
-static int handle_event(struct record_array *data)
-{
-    struct record_array sample = {0};
-
-    // accumulate for each cpu
-    for (int cpu = 0; cpu < firtst_offline_cpu; cpu++)
-    {
-        if (data[cpu].name[0] != 0)
-        {
-            sample.value += data[cpu].value;
-            sample.run_cnt += data[cpu].run_cnt;
-            if (sample.name[0] == 0)
-            {
-                strcpy(sample.name, data[cpu].name);
-                sample.type_counter = data[cpu].type_counter;
-            }
-        }
-    }
-
-    if (sample.name[0] == 0)
-    {
-        return 0;
-    }
-
-    struct tm *tm;
-    char ts[32];
-    time_t t;
-
-    time(&t);
-    tm = localtime(&t);
-    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-    if (output_file != NULL)
-    {
-        fprintf(output_file, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample.type_counter].name, sample.value,
-                sample.name);
-    }
-
-    if (accumulate)
-    {
-        accumulate_stats(&sample);
-        return 0;
-    }
-
-    if (!output_file)
-    {
-
-        fprintf(stdout, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample.type_counter].name, sample.value,
-                sample.name);
-        fflush(stdout);
-    }
-    return 0;
-}
-
 static void init_exit(int sig)
 {
-
     // read end timestamp
     clock_gettime(CLOCK_MONOTONIC, &end_running_time);
     sub_timespec(start_running_time, end_running_time, &delta);
 
     // consume remaining events
-    if (selected_metrics_cnt)
+    if (rb)
     {
-        for (int key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
+        int n = ring_buffer__consume(rb);
+        if (n < 0)
         {
-            if (bpf_map_lookup_elem(array_map_fd, &key, data))
-                continue;
-
-            handle_event(data);
+            fprintf(stderr, "[%s]: failed to consume ring buffer\n", WARN);
         }
+        else if (verbose) // if verbose is set, print the number of consumed events
+        {
+            fprintf(stdout, "[%s]: consumed %d events before exit\n", INFO, n);
+        }
+        ring_buffer__free(rb);
     }
-    free(data);
 
     for (int i = 0; i < (selected_metrics_cnt * n_cpus); i++)
     {
@@ -581,7 +490,6 @@ static void init_exit(int sig)
         gplot_close();
         free(plot_cfg);
     }
-
     bpf_object__close(obj);
     fprintf(stdout, "[%s]: Done \n", INFO);
     exit(0);
@@ -596,10 +504,10 @@ void moving_avg(FILE *file_data)
     tm = localtime(&t);
     strftime(ts, sizeof(ts), "%H:%M:%S", tm);
     char value[16];
-    char row[64];
+    char data[64];
     x++;
     // add time to data
-    snprintf(row, 64, "%d", x);
+    snprintf(data, 64, "%d", x);
     for (int s = 0; s < MAX_MEASUREMENT; s++)
     {
         for (int m = 0; m < selected_metrics_cnt; m++)
@@ -609,7 +517,7 @@ void moving_avg(FILE *file_data)
                 snprintf(value, sizeof(value), " %.2f",
                          (float)selected_metrics[m].acc_persection[s].acc_value /
                              selected_metrics[m].acc_persection[s].run_cnt);
-                strcat(row, value);
+                strcat(data, value);
             }
             else
             {
@@ -617,8 +525,42 @@ void moving_avg(FILE *file_data)
             }
         }
     }
-    fprintf(file_data, "%s\n", row);
+    fprintf(file_data, "%s\n", data);
     fflush(file_data);
+    return;
+}
+
+// accumulate stats
+void accumulate_stats(void *data)
+{
+    struct record *sample = data;
+
+    if (sample->type_counter >= selected_metrics_cnt)
+    {
+        return;
+    }
+
+    // find section if exists
+    for (int s = 0; s < MAX_MEASUREMENT; s++)
+    {
+        // if the section is null, we can create a new one and stop the loop
+        if (strlen(selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
+        {
+            strcpy(selected_metrics[sample->type_counter].acc_persection[s].name, sample->name);
+            selected_metrics[sample->type_counter].acc_persection[s].acc_value = sample->value;
+            selected_metrics[sample->type_counter].acc_persection[s].run_cnt = 1;
+            return;
+        }
+
+        // if the section exists, we can accumulate the value and stop the loop
+        if (strcmp(sample->name, selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
+        {
+            selected_metrics[sample->type_counter].acc_persection[s].acc_value += sample->value;
+            selected_metrics[sample->type_counter].acc_persection[s].run_cnt++;
+            return;
+        }
+    }
+
     return;
 }
 
@@ -705,7 +647,44 @@ static int attach_prog(struct bpf_program *prog)
     return 0;
 }
 
-static void poll_stats(unsigned int map_fd, __u32 timeout_ns)
+static int handle_event(void *ctx, void *data, size_t len)
+{
+
+    if (throw_away_events)
+        return 0;
+
+    struct record *sample = data;
+    struct tm *tm;
+    char ts[32];
+    time_t t;
+
+    time(&t);
+    tm = localtime(&t);
+    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
+    if (output_file)
+    {
+        fprintf(output_file, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample->type_counter].name,
+                sample->value, sample->name);
+    }
+
+    if (accumulate)
+    {
+        accumulate_stats(data);
+        return 0;
+    }
+
+    if (!output_file)
+    {
+
+        fprintf(stdout, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample->type_counter].name, sample->value,
+                sample->name);
+        fflush(stdout);
+    }
+    return 0;
+}
+
+static void poll_stats(unsigned int map_fd)
 {
     int err;
 
@@ -716,10 +695,9 @@ static void poll_stats(unsigned int map_fd, __u32 timeout_ns)
     if (do_plot)
     {
         pid_t plot_pid = fork();
-        if (plot_pid == 0) // CHILD PROCESS
+        if (plot_pid == 0)
         {
-            // set default signal handler, otherwise the plot process calls init_exit
-            signal(SIGINT, SIG_DFL);
+            // child process
             gplot_plot_poll();
             exit(0);
         }
@@ -730,18 +708,38 @@ static void poll_stats(unsigned int map_fd, __u32 timeout_ns)
         }
     }
 
-    while (1)
+    //// FIX - when a new ring buffer is opened, it receives the data that was not read previous
+    rb = ring_buffer__new(map_fd, handle_event, NULL, NULL);
+    err = libbpf_get_error(rb);
+    if (err)
     {
-        // read percpu array
-        for (int key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
-        {
-            err = bpf_map_lookup_elem(map_fd, &key, data);
-            if (err)
-            {
-                continue;
-            }
-            handle_event(data);
-        }
+        rb = NULL;
+        fprintf(stderr, "[%s]: failed to open ring buffer: %d\n", ERR, err);
+        init_exit(0);
+    }
+
+    /*
+     * we must consume the events received before this tool was started,
+     * otherwise some statistics would have wrong values compared with the data calculated by the tool.
+     * The statistics involved:
+     *   - percentage of samples
+     */
+
+    int n = ring_buffer__consume(rb);
+    if (n < 0)
+    {
+        fprintf(stderr, "[%s]: failed to consume ring buffer\n some value could be wrong", WARN);
+    }
+    else
+    {
+        if (verbose) // if verbose is set, print the number of consumed events
+            fprintf(stdout, "[%s]: consumed %d events before start\n", INFO, n);
+        // run_cnt += n; I prefer to throw away the events
+        throw_away_events = 0;
+    }
+
+    while (ring_buffer__poll(rb, 1000) >= 0)
+    {
         if (do_plot)
         {
             current_time = time(NULL);
@@ -751,12 +749,21 @@ static void poll_stats(unsigned int map_fd, __u32 timeout_ns)
                 start_time = current_time;
             }
         }
-        sleep(timeout_ns / 1000);
     }
+
+    // this could be an alternative to ring_buffer__poll
+    // should improve notification adaptation, but needs to be tested
+    // int timeout = 10;
+    // while (2)
+    //{
+    //    ring_buffer__consume(rb);
+    //    sleep(timeout);
+    //}
 }
 
 int main(int arg, char **argv)
 {
+    int rb_map_fd = -1;
     struct bpf_program *prog;
     int err, opt;
 
@@ -767,10 +774,8 @@ int main(int arg, char **argv)
     prog_name = NULL;
     info_len = sizeof(info);
     plot_cfg = malloc(sizeof(struct gnuplot_cfg));
-    data = malloc(n_cpus * sizeof(struct record_array));
     x = 0;
-    array_map_fd = -1;
-    firtst_offline_cpu = -1;
+    throw_away_events = 1;
 
     // retrieve opt
     while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:hsvlcx")) != -1)
@@ -832,7 +837,7 @@ int main(int arg, char **argv)
             enable_run_cnt = 1;
             break;
         case 'o':
-            memcpy(output_filename, optarg, strlen(optarg));
+            output_filename = optarg;
             break;
         // find a appropriate name for this
         case 'x':
@@ -950,8 +955,8 @@ int main(int arg, char **argv)
     {
         if (load)
         {
-            array_map_fd = bpf_object__find_map_fd_by_name(obj, "percpu_output");
-            if (array_map_fd < 0)
+            rb_map_fd = bpf_object__find_map_fd_by_name(obj, "ring_output");
+            if (rb_map_fd < 0)
             {
                 fprintf(stderr, "[%s]: finding map\n", ERR);
                 return 1;
@@ -960,7 +965,7 @@ int main(int arg, char **argv)
         else // if not loaded by this tool, retrieve map fd
         {
             char filename_map[256];
-            err = snprintf(filename_map, sizeof(filename_map), "%s%s", PINNED_PATH, "percpu_output");
+            err = snprintf(filename_map, sizeof(filename_map), "%s%s", PINNED_PATH, "ring_output");
             if (err < 0)
             {
                 fprintf(stderr, "[%s]: creating filename for pinned path\n", ERR);
@@ -968,35 +973,13 @@ int main(int arg, char **argv)
             }
 
             // retrieve map fd from pinned path
-            array_map_fd = bpf_obj_get(filename_map);
-            if (array_map_fd < 0)
+            rb_map_fd = bpf_obj_get(filename_map);
+            if (rb_map_fd < 0)
             {
                 fprintf(stderr, "[%s]: getting map fd from pinned path: %s\n", ERR, filename_map);
                 return 1;
             }
         }
-
-        /*
-         * we must delete the events received before this tool was started,
-         * otherwise some statistics would have wrong values compared with the data calculated by the tool.
-         * The statistics involved:
-         *   - percentage of samples
-         */
-
-        // update each element of the map with a zeroed array
-        unsigned char *reset = calloc(n_cpus, sizeof(struct record_array));
-
-        for (__u32 key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
-        {
-            err = bpf_map_update_elem(array_map_fd, &key, reset, 0);
-            if (err)
-            {
-                fprintf(stderr, "[%s]: deleting map element: %s\n", ERR, strerror(errno));
-                return 1;
-            }
-        }
-
-        free(reset);
     }
 
     // start perf before loading prog
@@ -1107,11 +1090,11 @@ int main(int arg, char **argv)
     clock_gettime(CLOCK_MONOTONIC, &start_running_time);
 
     fprintf(stdout, "[%s]: Running... \nPress Ctrl+C to stop\n", INFO);
-    if (selected_metrics_cnt > 0 && array_map_fd > 0)
+    if (selected_metrics_cnt > 0 && rb_map_fd > 0)
     {
         // TODO - Using file as output instead stdout may not work properly
         // I either fixed the problem or I forgot what it was :)
-        if (output_filename[0] != '\0')
+        if (output_filename)
         {
             output_file = fopen(output_filename, "w");
             if (output_file == NULL)
@@ -1122,7 +1105,7 @@ int main(int arg, char **argv)
             }
         }
         // start perf before polling
-        poll_stats(array_map_fd, 1000);
+        poll_stats(rb_map_fd);
     }
     else
     {
