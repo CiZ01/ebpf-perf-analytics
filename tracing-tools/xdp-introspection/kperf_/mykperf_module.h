@@ -92,17 +92,18 @@ static __always_inline long 0
         bpf_ringbuf_submit(sec_name, 0);                                                                               \
     }
 
-#define BPF_MYKPERF_START_TRACE_ARRAY(sec_name, counter) __u64 start_##sec_name = bpf_mykperf_read_rdpmc(counter);
+#define BPF_MYKPERF_START_TRACE_ARRAY(sec_name, counter) __u64 value_##sec_name = bpf_mykperf_read_rdpmc(counter);
 
 #define BPF_MYKPERF_END_TRACE_ARRAY(sec_name, counter, id)                                                             \
-    if (start_##sec_name)                                                                                              \
+    if (value_##sec_name)                                                                                              \
     {                                                                                                                  \
+        value_##sec_name = bpf_mykperf_read_rdpmc(counter) - value_##sec_name;                                         \
         __u32 key = id;                                                                                                \
         struct record_array *sec_name = {0};                                                                           \
         sec_name = bpf_map_lookup_elem(&percpu_output, &key);                                                          \
         if (LIKELY(sec_name))                                                                                          \
         {                                                                                                              \
-            sec_name->value += bpf_mykperf_read_rdpmc(counter) - start_##sec_name;                                     \
+            sec_name->value += value_##sec_name;                                                                       \
             sec_name->run_cnt++;                                                                                       \
             if (sec_name->name[0] == 0)                                                                                \
             {                                                                                                          \
@@ -120,6 +121,12 @@ static __always_inline long 0
         BPF_MYKPERF_START_TRACE(sec_name, counter)                                                                     \
     }
 
+#define BPF_MYKPERF_START_TRACE_ARRAY_SAMPLED(sec_name, counter, sample_rate)                                          \
+    if (UNLIKELY(RAND_FN & sample_rate))                                                                               \
+    {                                                                                                                  \
+        BPF_MYKPERF_START_TRACE_ARRAY(sec_name, counter)                                                               \
+    }
+
 // ----------------------------- --- -----------------------------
 
 #else
@@ -132,6 +139,7 @@ static __always_inline long 0
 #define BPF_MYKPERF_END_TRACE_SAMPLED(sec_name, counter)
 #define BPF_MYKPERF_START_TRACE_ARRAY(sec_name, counter)
 #define BPF_MYKPERF_END_TRACE_ARRAY(sec_name, counter, id)
+#define BPF_MYKPERF_START_TRACE_ARRAY_SAMPLED(sec_name, counter, sample_rate)
 #endif
 
 #endif // MYKEPERF_MODULE_H

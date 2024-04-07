@@ -176,6 +176,7 @@ int throw_away_events;
 // plot
 int do_plot;
 struct gnuplot_cfg *plot_cfg;
+int x_axis;
 
 // profiler
 static struct profiler *profile_obj;
@@ -185,9 +186,6 @@ __u64 run_cnt;
 // output file
 FILE *output_file;
 char output_filename[256];
-
-// DEBUG
-int x;
 
 struct profile_metric selected_metrics[MAX_METRICS];
 int selected_metrics_cnt;
@@ -207,7 +205,6 @@ void usage()
     printf("  -e <metrics>         : Comma separated list of metrics\n");
     printf("  -a                   : Accumulate stats\n");
     printf("  -c                   : Enable run count\n");
-    printf("  -l                   : Load program\n");
     printf("  -o <output_filename> : Output filename\n");
     printf("  -v                   : Verbose\n");
     printf("  -s                   : Supported metrics\n");
@@ -430,25 +427,24 @@ static int handle_event(struct record_array *data)
     time(&t);
     tm = localtime(&t);
     strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
+    // FORMAT OUTPUT
+    char *fmt = "%s     %s: %llu    (%s)  %.2f/pkt - %u run_cnt\n";
+
     if (output_file != NULL)
     {
-        fprintf(output_file, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample.type_counter].name, sample.value,
-                sample.name);
-    }
-
-    if (accumulate)
-    {
-        accumulate_stats(&sample);
-        return 0;
+        fprintf(output_file, fmt, ts, selected_metrics[sample.type_counter].name, sample.value, sample.name,
+                (float)sample.value / sample.run_cnt, sample.run_cnt);
     }
 
     if (!output_file)
     {
 
-        fprintf(stdout, "%s     %s: %llu    (%s)\n", ts, selected_metrics[sample.type_counter].name, sample.value,
-                sample.name);
+        fprintf(stdout, fmt, ts, selected_metrics[sample.type_counter].name, sample.value, sample.name,
+                (float)sample.value / sample.run_cnt, sample.run_cnt);
         fflush(stdout);
     }
+    accumulate_stats(&sample);
     return 0;
 }
 
@@ -526,10 +522,7 @@ static void init_exit(int sig)
     }
 
     // print accumulated stats
-    if (accumulate)
-    {
-        print_accumulated_stats();
-    }
+    print_accumulated_stats();
 
     // print delta time
     fprintf(stdout, "[%s]: Elapsed time: %d.%09ld\n", INFO, (int)delta.tv_sec, delta.tv_nsec);
@@ -597,9 +590,9 @@ void moving_avg(FILE *file_data)
     strftime(ts, sizeof(ts), "%H:%M:%S", tm);
     char value[16];
     char row[64];
-    x++;
+    x_axis++;
     // add time to data
-    snprintf(row, 64, "%d", x);
+    snprintf(row, 64, "%d", x_axis);
     for (int s = 0; s < MAX_MEASUREMENT; s++)
     {
         for (int m = 0; m < selected_metrics_cnt; m++)
@@ -768,12 +761,12 @@ int main(int arg, char **argv)
     info_len = sizeof(info);
     plot_cfg = malloc(sizeof(struct gnuplot_cfg));
     data = malloc(n_cpus * sizeof(struct record_array));
-    x = 0;
     array_map_fd = -1;
     firtst_offline_cpu = -1;
+    x_axis = 0;
 
     // retrieve opt
-    while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:hsvlcx")) != -1)
+    while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:hsvcx")) != -1)
     {
         switch (opt)
         {
@@ -815,12 +808,10 @@ int main(int arg, char **argv)
             break;
         case 'f':
             strcpy(filename, optarg);
+            load = 1;
             break;
         case 'n':
             strcpy(func_name, optarg);
-            break;
-        case 'l':
-            load = 1;
             break;
         case 'i':
             ifname = optarg;
@@ -1010,7 +1001,7 @@ int main(int arg, char **argv)
     // if user wants plot, do it
     if (do_plot)
     {
-        char *plot_filename = "tmp_data.txt";
+        char *plot_filename = "/tmp/loader-stats-plot.data";
         char *plot_title = "Metrics";
 
         // plot config
