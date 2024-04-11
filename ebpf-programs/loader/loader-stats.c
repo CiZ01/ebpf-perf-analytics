@@ -776,14 +776,9 @@ int main(int arg, char **argv)
             {
                 xdp_flags |= XDP_FLAGS_SKB_MODE;
             }
-            else if (strcmp(optarg, "native") == 0)
-            {
-                xdp_flags |= XDP_FLAGS_DRV_MODE;
-            }
             else
             {
-                fprintf(stderr, "Invalid xdp mode\n");
-                return 1;
+                xdp_flags |= XDP_FLAGS_DRV_MODE;
             }
             break;
         case 'e':
@@ -944,7 +939,7 @@ int main(int arg, char **argv)
             array_map_fd = bpf_object__find_map_fd_by_name(obj, "percpu_output");
             if (array_map_fd < 0)
             {
-                fprintf(stderr, "[%s]: finding map\n", ERR);
+                fprintf(stderr, "[%s]: finding map\nbe sure %s program own 'percpu_output' map", ERR, filename);
                 return 1;
             }
         }
@@ -954,7 +949,7 @@ int main(int arg, char **argv)
             err = snprintf(filename_map, sizeof(filename_map), "%s%s", PINNED_PATH, "percpu_output");
             if (err < 0)
             {
-                fprintf(stderr, "[%s]: creating filename for pinned path\n", ERR);
+                fprintf(stderr, "[%s]: creating filename for pinned path: %s\n", ERR, strerror(errno));
                 return 1;
             }
 
@@ -962,7 +957,7 @@ int main(int arg, char **argv)
             array_map_fd = bpf_obj_get(filename_map);
             if (array_map_fd < 0)
             {
-                fprintf(stderr, "[%s]: getting map fd from pinned path: %s\n", ERR, filename_map);
+                fprintf(stderr, "[%s]: getting map fd from pinned path: %s\nbe sure %s program own 'percpu_output' map", ERR, filename_map, func_name);
                 return 1;
             }
         }
@@ -1037,8 +1032,6 @@ int main(int arg, char **argv)
             // attach prog to interface and if enable_run_cnt is set, enable run count
             // attaching a fentry program
 
-            // the program will be attached only if load is set
-
             err = attach_prog(prog);
             if (err)
             {
@@ -1063,7 +1056,7 @@ int main(int arg, char **argv)
         prog_fd = prog_fd_by_nametag(func_name);
         if (prog_fd < 0)
         {
-            fprintf(stderr, "[%s]: retrieving prog fd for program name: %s\n", ERR, func_name);
+            fprintf(stderr, "[%s]: during prog fd retreive for program name: %s\n", ERR, func_name);
             return 1;
         }
 
@@ -1072,7 +1065,7 @@ int main(int arg, char **argv)
         err = bpf_obj_get_info_by_fd(prog_fd, &info, &info_len);
         if (err)
         {
-            fprintf(stderr, "[%s]: getting prog info by fd\n", ERR);
+            fprintf(stderr, "[%s]: during getting prog info by fd: %d\n", ERR, prog_fd);
             return 1;
         }
 
@@ -1107,7 +1100,7 @@ int main(int arg, char **argv)
             output_file = fopen(output_filename, "w");
             if (output_file == NULL)
             {
-                fprintf(stderr, "[%s]: opening output file\n", ERR);
+                fprintf(stderr, "[%s]: during opening output file: %s\n", ERR, output_filename);
                 init_exit(0);
                 return 1;
             }
