@@ -7,18 +7,18 @@ KHEADER:= ../../tracing-tools/xdp-introspection/kperf_
 .SILENT: all
 .PHONY: all build build_trace
 
-all: build build_trace
+all: build #build_trace
 
-build: $(TARGET) #$(TARGET)_skel $(TARGET_USER) $(TARGET_TEST)_run
+build: $(TARGET) $(TARGET)_skel $(TARGET_USER) $(TARGET_TEST)_run
 
-build_trace: $(TARGET)_trace #$(TARGET_TEST)_trace_run
+build_trace: #$(TARGET)_trace #$(TARGET_TEST)_trace_run
 
 
 
 # --------------------- KERNEL SPACE -------------------------------
 $(TARGET): 
 	@echo "[INFO]: Compiling $(TARGET)"
-	clang -g -Wno-compare-distinct-pointer-types -O2 -I$(KHEADER) -target bpf -c $(TARGET).c -o $(TARGET).o
+	clang -Wno-compare-distinct-pointer-types -g -O2 -I$(KHEADER) -target bpf -c $(TARGET).c -o $(TARGET).o
 
 $(TARGET)_trace:
 	@echo "[INFO]: Compiling $(TARGET)_trace"

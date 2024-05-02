@@ -1,11 +1,8 @@
-#ifndef MYKEPERF_MODULE_H
-#define MYKEPERF_MODULE_H
+#ifndef _XDPMYCHARDEV_H_
+#define _XDPMYCHARDEV_H_
 
-#ifdef INTEL_CPU
-#define get_counter(counter) 1 << 30 + counter
-#else
-#define get_counter(counter) counter
-#endif
+#include <asm/types.h>
+#include <stdlib.h>
 
 #define memcpy(dest, src, n) __builtin_memcpy((dest), (src), (n))
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
@@ -19,11 +16,12 @@ struct record_array
     __u64 value;
     __u64 run_cnt;
     char name[15];
-    __u64 counter;
+    __u64 type_counter;
 } __attribute__((aligned(32)));
 
 #define BPF_MYKPERF_INIT_TRACE()                                                                                       \
-    __u64 bpf_mykperf__rdpmc(__u64 counter) __ksym;                                                                    \
+    __u64 bpf_mykperf_rdmsr(__u64 counter) __ksym;                                                                     \
+    __u64 reg_counter = 0;                                                                                             \
     __u64 __sample_rate = 0;                                                                                           \
     __u64 run_cnt = 0;                                                                                                 \
     struct                                                                                                             \
@@ -35,34 +33,35 @@ struct record_array
         __uint(pinning, LIBBPF_PIN_BY_NAME);                                                                           \
     } percpu_output SEC(".maps");
 
-#define DEFINE_SECTIONS(...) const char __sections[15][8] = {__VA_ARGS__};
-
 #define COUNT_RUN __sync_fetch_and_add(&run_cnt, 1);
 
 // ------------------------- ARRAY MAP -------------------------------
-#define BPF_MYKPERF_START_TRACE_ARRAY(sec_name)                                                                        \
-    __u64 value_##sec_name = 0;                                                                                        \
-    struct record_array *sec_name = {0};                                                                               \
-    __u32 key = __COUNTER__;                                                                                           \
-    sec_name = bpf_map_lookup_elem(&percpu_output, &key);                                                              \
-    if (LIKELY(sec_name))                                                                                              \
-    {                                                                                                                  \
-        value_##sec_name = bpf_mykperf__rdpmc(sec_name->counter);                                                      \
-    }
+#define BPF_MYKPERF_START_TRACE_ARRAY(sec_name) __u64 value_##sec_name = bpf_mykperf_rdmsr(reg_counter);
 
-#define BPF_MYKPERF_END_TRACE_ARRAY(sec_name)                                                                          \
-    if (LIKELY(sec_name))                                                                                              \
+#define BPF_MYKPERF_END_TRACE_ARRAY(sec_name, index)                                                                   \
+    if (value_##sec_name)                                                                                              \
     {                                                                                                                  \
-        sec_name->value +=                                                                                             \
-            (__u64)__builtin_elementwise_abs((int)(bpf_mykperf__rdpmc(sec_name->counter) - value_##sec_name));         \
-        sec_name->run_cnt++;                                                                                           \
+        value_##sec_name = (__u64)abs(bpf_mykperf_rdmsr(reg_counter) - value_##sec_name);                              \
+        __u32 key = index;                                                                                             \
+        struct record_array *sec_name = {0};                                                                           \
+        sec_name = bpf_map_lookup_elem(&percpu_output, &key);                                                          \
+        if (LIKELY(sec_name))                                                                                          \
+        {                                                                                                              \
+            sec_name->value += value_##sec_name;                                                                       \
+            sec_name->run_cnt++;                                                                                       \
+            if (sec_name->name[0] == 0)                                                                                \
+            {                                                                                                          \
+                memcpy(sec_name->name, #sec_name, sizeof(sec_name->name));                                             \
+                sec_name->type_counter = reg_counter;                                                                  \
+            }                                                                                                          \
+        }                                                                                                              \
     }
 
 #define BPF_MYKPERF_START_TRACE_ARRAY_SAMPLED(sec_name)                                                                \
     __u64 value_##sec_name = 0;                                                                                        \
     if (UNLIKELY(run_cnt % __sample_rate == 0))                                                                        \
     {                                                                                                                  \
-        value_##sec_name = bpf_mykperf__rdpmc(reg_counter);                                                            \
+        value_##sec_name = bpf_mykperf_rdmsr(reg_counter);                                                             \
     }
 
 // --------------------- RING BUFFER --------------------------------
@@ -73,13 +72,13 @@ struct record_array
     {                                                                                                                  \
         memcpy(sec_name->name, #sec_name, sizeof(sec_name->name));                                                     \
         sec_name->type_counter = reg_counter;                                                                          \
-        sec_name->value = bpf_mykperf__rdpmc(reg_counter);                                                             \
+        sec_name->value = bpf_mykperf_rdmsr(reg_counter);                                                              \
     }
 
 #define BPF_MYKPERF_END_TRACE(sec_name)                                                                                \
     if (sec_name)                                                                                                      \
     {                                                                                                                  \
-        sec_name->value = bpf_mykperf__rdpmc(reg_counter) - sec_name->value_##sec_name;                                \
+        sec_name->value = bpf_mykperf_rdmsr(reg_counter) - sec_name->value_##sec_name;                                 \
         bpf_ringbuf_submit(sec_name, 0);                                                                               \
     }
 

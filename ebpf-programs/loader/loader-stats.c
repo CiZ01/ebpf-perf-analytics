@@ -25,7 +25,9 @@
 
 // profiler
 #include "profiler/profiler.skel.h"
+
 #include "mykperf_module.h"
+#include "mykperf_helpers.h"
 
 // plot
 #include "gnuplot/gplot.h"
@@ -41,107 +43,32 @@
 #define MAX_MEASUREMENT 16
 #define PINNED_PATH "/sys/fs/bpf/"
 
-struct section_stats
-{
-    __u64 acc_value;
-    char name[16];
-    __u64 run_cnt; // if the sections are sampled, we can count the runs
-
-    // I don't need type counter attribute, this struct is used inside `profile_metric`
-};
-
 // metrics definition
 struct profile_metric
 {
     const char *name;
-    // unused
-    // struct bpf_perf_event_value val;
-    struct section_stats *acc_persection;
-    struct perf_event_attr attr;
-    bool selected;
-
-    /* calculate ratios like instructions per cycle */
-    const int ratio_metric; /* 0 for N/A, 1 for index 0 (cycles) */
-    const char *ratio_desc;
-    const float ratio_mul;
+    const __u64 code;
+    int cpu;
+    __u8 enabled;
+    struct record_array data_section;
 } metrics[] = {
-    {
-        // cycles
-        .name = "cycles",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_CPU_CYCLES,
-                .exclude_user = 1,
-            },
-    },
-    {
-        // instructions
-        .name = "instructions",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_INSTRUCTIONS,
-                .exclude_user = 1,
-            },
-        .ratio_metric = 1,
-        .ratio_desc = "insns per cycle",
-        .ratio_mul = 1.0,
-    },
-    {
-        // branch misses
-        .name = "branch-misses",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_BRANCH_MISSES,
-                .exclude_user = 1,
-            },
-        .ratio_metric = 1,
-        .ratio_desc = "branch-misses per cycle",
-        .ratio_mul = 1.0,
-    },
-    {
-        // cache misses
-        .name = "cache-misses",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_CACHE_MISSES,
-                .exclude_user = 1,
-            },
-        .ratio_metric = 1,
-        .ratio_desc = "cache-misses per cycle",
-        .ratio_mul = 1.0,
-    },
-    {
-        // L1-dcache-load-misses
-        .name = "L1-dcache-load-misses",
-        .attr =
-            {
-                .type = PERF_TYPE_HW_CACHE,
-                .config = (PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16)),
-                .exclude_user = 1,
-            },
-        .ratio_metric = 1,
-        .ratio_desc = "L1-dcache-load-misses per cycle",
-        .ratio_mul = 1.0,
-    },
-    {
-        // LLC-load-misses
-        .name = "LLC-load-misses",
-        .attr =
-            {
-                .type = PERF_TYPE_HW_CACHE,
-                .config = (PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16)),
-                .exclude_user = 1,
-            },
-        .ratio_metric = 1,
-        .ratio_desc = "LLC-load-misses per cycle",
-        .ratio_mul = 1.0,
-    },
+    {.name = "instructions", .code = 0x00c0},
+    {.name = "cycles", .code = 0x003c},
+    {.name = "cache-misses", .code = 0x2e41},
+    {.name = "llc-misses", .code = 0x01b7},
+    // questi dopo vanno settati
+    {"branch_misses", 0x30c},
+    {"bus_cycles", 0x30b},
+    {"stalled_cycles_frontend", 0x30d},
+    {"stalled_cycles_backend", 0x30e},
+    {"ref_cpu_cycles", 0x30f},
+    {"cpu_clock", 0x309},
+    {"task_clock", 0x30a},
+    {"page_faults", 0x30b},
+    {"context_switches", 0x30c},
+    {"cpu_migrations", 0x30d},
+    {"page_faults_min", 0x30e},
+    {"page_faults_maj", 0x30f},
 };
 
 #define MAX_PROG_FULL_NAME 15
@@ -180,6 +107,8 @@ int x_axis;
 
 // profiler
 static struct profiler *profile_obj;
+
+// run count
 int enable_run_cnt;
 __u64 run_cnt;
 
@@ -187,8 +116,14 @@ __u64 run_cnt;
 FILE *output_file;
 char output_filename[256];
 
+// sample rate
+__u64 sample_rate;
+
+int running_cpu;
+
 struct profile_metric selected_metrics[MAX_METRICS];
 int selected_metrics_cnt;
+char section_list[15][8];
 
 // TODO - acc fn
 int accumulate;
@@ -220,87 +155,108 @@ void supported_metrics()
     }
 }
 
-static int perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu, int group_fd, unsigned long flags)
+static int get_run_count()
 {
-    return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
+    int fd = 0;
+    int zero = 0;
+    fprintf(stdout, "[%s]: Getting run count\n", INFO);
+    fd = find_data_map();
+    if (fd < 0)
+    {
+        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        return -1;
+    }
+
+    struct bss data = {0};
+
+    int err = bpf_map_lookup_elem(fd, &zero, &data);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during updating sample rate\n", ERR);
+        return -1;
+    }
+
+    int run_count = data.run_cnt;
+
+    close(fd);
+    return run_count;
 }
 
 static int start_perf(int n_cpus)
 {
+    int err;
+    __u64 out_reg = 0;
     for (int i = 0; i < selected_metrics_cnt; i++)
     {
-        for (int cpu = 0; cpu < n_cpus; cpu++)
+        err = enable_event(selected_metrics[i].code, &out_reg, selected_metrics[i].cpu);
+        if (err)
         {
-            perf_fd = perf_event_open(&selected_metrics[i].attr, -1, cpu, -1, 0);
-            if (perf_fd < 0)
-            {
-                if (errno == ENODEV)
-                {
-                    // I don't know if this is the best way to handle this
-                    if (firtst_offline_cpu == -1)
-                    {
-                        firtst_offline_cpu = cpu;
-                    }
-                    if (verbose)
-                    {
-                        fprintf(stderr, "[%s]: cpu: %d may be offline\n", WARN, cpu);
-                    }
-                    continue;
-                }
-                else
-                {
-                    fprintf(stderr, "[%s]: perf_event_open failed - cpu: %d metric: %s\n", ERR, cpu,
-                            selected_metrics[i].name);
-                }
-            }
-
-            // enable perf event
-            if (ioctl(perf_fd, PERF_EVENT_IOC_ENABLE, 0))
-            {
-                fprintf(stderr, "[%s]: ioctl failed - cpu: %d metric: %s\n", ERR, cpu, selected_metrics[i].name);
-                return -1;
-            }
-            perf_event_fds[cpu + i] = perf_fd;
+            fprintf(stderr, "[%s]: during enabling event %s: %s\n", ERR, selected_metrics[i].name, strerror(errno));
+            return -1;
         }
+        fprintf(stdout, "[%s]:   %s: %llx\n", DEBUG, selected_metrics[i].name, out_reg);
+        selected_metrics[i].enabled = 1;
+        selected_metrics[i].data_section.counter = out_reg;
     }
     return 0;
 }
 
-static void print_accumulated_stats()
+static void end_perf()
 {
-    float percentage = 0;
-    float avg_single_run = 0;
-
-    fprintf(stdout, "\nAccumulated stats\n\n");
+    int err;
     for (int i = 0; i < selected_metrics_cnt; i++)
     {
-        fprintf(stdout, "%s\n", selected_metrics[i].name);
-        for (int s = 0; s < MAX_MEASUREMENT; s++)
+        if (selected_metrics[i].enabled)
         {
-            if (strlen(selected_metrics[i].acc_persection[s].name) > 0)
+            fprintf(stdout, "[%s]: Disabling event %s\n", INFO, selected_metrics[i].name);
+            err = disable_event(selected_metrics[i].data_section.counter, selected_metrics[i].code,
+                                selected_metrics[i].cpu);
+            if (err < 0)
             {
-
-                if (enable_run_cnt)
-                {
-                    percentage = ((float)selected_metrics[i].acc_persection[s].run_cnt / run_cnt) * 100;
-                }
-                avg_single_run = (float)selected_metrics[i].acc_persection[s].acc_value /
-                                 selected_metrics[i].acc_persection[s].run_cnt;
-
-                fprintf(stdout, "[%s]: %s - %'llu runs\n", DEBUG, selected_metrics[i].acc_persection[s].name,
-                        selected_metrics[i].acc_persection[s].run_cnt);
-                fprintf(stdout, "    %s: %'llu      (%.2f%%)    avg: %2.f/pkt\n\n",
-                        selected_metrics[i].acc_persection[s].name, selected_metrics[i].acc_persection[s].acc_value,
-                        percentage, avg_single_run);
+                fprintf(stderr, "[%s]: during disabling event %s: %s\n", ERR, selected_metrics[i].name,
+                        strerror(errno));
             }
-            else
-            {
-                // here we can break the loop if we find a null section,
-                // because the next sections will be null too
-                break;
-            }
+            selected_metrics[i].enabled = 0;
         }
     }
+    return;
+}
+
+static void print_accumulated_stats()
+{
+    struct record_array sample = {0};
+    int err;
+    // read percpu array
+    for (int key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
+    {
+        sample.name[0] = 0;
+        err = bpf_map_lookup_elem(array_map_fd, &key, data);
+        if (err)
+        {
+            fprintf(stderr, "[%s]: during last bpf_map_lookup_elem: %s\n", ERR, strerror(errno));
+            continue;
+        }
+        // accumulate for each cpu
+        for (int cpu = 0; cpu < n_cpus; cpu++)
+        {
+            if (data[cpu].name[0] != 0)
+            {
+                sample.value += data[cpu].value;
+                sample.run_cnt += data[cpu].run_cnt;
+                if (sample.name[0] == 0)
+                {
+                    strcpy(sample.name, data[cpu].name);
+                    sample.counter = data[cpu].counter;
+                }
+            }
+        }
+
+        if (sample.name[0] != 0)
+        {
+            fprintf(stdout, "    %s: %llu  - %llu run_count \n\n", sample.name, sample.value, sample.run_cnt);
+        }
+    }
+    return;
 }
 
 void sub_timespec(struct timespec t1, struct timespec t2, struct timespec *td)
@@ -364,38 +320,6 @@ static int prog_fd_by_nametag(char nametag[15])
     return fd;
 }
 
-// accumulate stats
-void accumulate_stats(struct record_array *sample)
-{
-    if (sample->type_counter >= selected_metrics_cnt)
-    {
-        return;
-    }
-
-    // find section if exists
-    for (int s = 0; s < MAX_MEASUREMENT; s++)
-    {
-        // if the section is null, we can create a new one and stop the loop
-        if (strlen(selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
-        {
-            strcpy(selected_metrics[sample->type_counter].acc_persection[s].name, sample->name);
-            selected_metrics[sample->type_counter].acc_persection[s].acc_value = sample->value;
-            selected_metrics[sample->type_counter].acc_persection[s].run_cnt = sample->run_cnt;
-            return;
-        }
-
-        // if the section exists, we can accumulate the value and stop the loop
-        if (strcmp(sample->name, selected_metrics[sample->type_counter].acc_persection[s].name) == 0)
-        {
-            selected_metrics[sample->type_counter].acc_persection[s].acc_value = sample->value;
-            selected_metrics[sample->type_counter].acc_persection[s].run_cnt = sample->run_cnt;
-            return;
-        }
-    }
-
-    return;
-}
-
 static int handle_event(struct record_array *data)
 {
     struct record_array sample = {0};
@@ -410,7 +334,7 @@ static int handle_event(struct record_array *data)
             if (sample.name[0] == 0)
             {
                 strcpy(sample.name, data[cpu].name);
-                sample.type_counter = data[cpu].type_counter;
+                sample.counter = data[cpu].counter;
             }
         }
     }
@@ -433,18 +357,17 @@ static int handle_event(struct record_array *data)
 
     if (output_file != NULL)
     {
-        fprintf(output_file, fmt, ts, selected_metrics[sample.type_counter].name, sample.value, sample.name,
+        fprintf(output_file, fmt, ts, selected_metrics[sample.counter].name, sample.value, sample.name,
                 (float)sample.value / sample.run_cnt, sample.run_cnt);
     }
 
     if (!output_file)
     {
 
-        fprintf(stdout, fmt, ts, selected_metrics[sample.type_counter].name, sample.value, sample.name,
+        fprintf(stdout, fmt, ts, selected_metrics[sample.counter].name, sample.value, sample.name,
                 (float)sample.value / sample.run_cnt, sample.run_cnt);
         fflush(stdout);
     }
-    accumulate_stats(&sample);
     return 0;
 }
 
@@ -467,13 +390,6 @@ static void init_exit(int sig)
         }
     }
     free(data);
-
-    for (int i = 0; i < (selected_metrics_cnt * n_cpus); i++)
-    {
-        if (perf_event_fds[i] > 0)
-            close(perf_event_fds[i]);
-    }
-    free(perf_event_fds);
 
     // close output file
     if (output_file)
@@ -521,8 +437,12 @@ static void init_exit(int sig)
         profiler__destroy(profile_obj);
     }
 
+
     // print accumulated stats
-    print_accumulated_stats();
+    if (selected_metrics_cnt > 0)
+    {
+        print_accumulated_stats();
+    }
 
     // print delta time
     fprintf(stdout, "[%s]: Elapsed time: %d.%09ld\n", INFO, (int)delta.tv_sec, delta.tv_nsec);
@@ -534,12 +454,6 @@ static void init_exit(int sig)
 
     if (run_cnt)
         fprintf(stdout, "[%s]: Troughtput: %d.%09lld\n", INFO, (int)(run_cnt / delta.tv_sec), run_cnt / delta.tv_nsec);
-
-    // after read, free acc_persection
-    for (int i = 0; i < selected_metrics_cnt; i++)
-    {
-        free(selected_metrics[i].acc_persection);
-    }
 
     fprintf(stdout, "[%s]: Detaching program...\n", INFO);
 
@@ -575,6 +489,11 @@ static void init_exit(int sig)
         free(plot_cfg);
     }
 
+    if (selected_metrics_cnt)
+    {
+        end_perf();
+    }
+
     bpf_object__close(obj);
     fprintf(stdout, "[%s]: Done \n", INFO);
     exit(0);
@@ -597,11 +516,10 @@ void moving_avg(FILE *file_data)
     {
         for (int m = 0; m < selected_metrics_cnt; m++)
         {
-            if (strlen(selected_metrics[m].acc_persection[s].name) != 0)
+            if (strlen(selected_metrics[m].data_section.name) != 0)
             {
                 snprintf(value, sizeof(value), " %.2f",
-                         (float)selected_metrics[m].acc_persection[s].acc_value /
-                             selected_metrics[m].acc_persection[s].run_cnt);
+                         (float)selected_metrics[m].data_section.value / selected_metrics[m].data_section.run_cnt);
                 strcat(row, value);
             }
             else
@@ -748,12 +666,39 @@ static void poll_stats(unsigned int map_fd, __u32 timeout_ns)
     }
 }
 
+static int get_psec_name_list(char section_list_out[15][8])
+{
+    int fd = 0;
+    int zero = 0;
+    fd = find_data_map();
+    if (fd < 0)
+    {
+        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        return -1;
+    }
+
+    struct bss bss_data = {0};
+
+    int err = bpf_map_lookup_elem(fd, &zero, &bss_data);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during profiler section name retrieve\n", ERR);
+        return -1;
+    }
+
+    memcpy(section_list_out, bss_data.sections, sizeof(bss_data.sections));
+
+    close(fd);
+    return 0;
+}
+
 int main(int arg, char **argv)
 {
     struct bpf_program *prog;
     int err, opt;
 
     // set shared var
+    ifname = "\0";
     n_cpus = libbpf_num_possible_cpus();
     selected_metrics_cnt = 0;
     load = 0;
@@ -764,9 +709,10 @@ int main(int arg, char **argv)
     array_map_fd = -1;
     firtst_offline_cpu = -1;
     x_axis = 0;
+    running_cpu = 0;
 
     // retrieve opt
-    while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:hsvcx")) != -1)
+    while ((opt = getopt(arg, argv, ":m:P:f:n:i:e:ao:C:r:hsvcx")) != -1)
     {
         switch (opt)
         {
@@ -790,7 +736,6 @@ int main(int arg, char **argv)
                 {
                     if (strcmp(token, metrics[i].name) == 0)
                     {
-                        metrics[i].selected = true;
                         memcpy(&selected_metrics[selected_metrics_cnt], &metrics[i], sizeof(struct profile_metric));
                         selected_metrics_cnt++;
                     }
@@ -811,11 +756,17 @@ int main(int arg, char **argv)
         case 'i':
             ifname = optarg;
             break;
+        case 'r':
+            sample_rate = atoi(optarg);
+            break;
         case 'a':
             accumulate = 1;
             break;
         case 'c':
             enable_run_cnt = 1;
+            break;
+        case 'C':
+            running_cpu = atoi(optarg);
             break;
         case 'o':
             memcpy(output_filename, optarg, strlen(optarg));
@@ -840,13 +791,14 @@ int main(int arg, char **argv)
         }
     }
 
-    // check mandatory opt
-    if (!(strlen(filename) || strlen(func_name)) || !strlen(ifname))
+    // TODO: improve this
+    // for loading filename and ifname are mandatory
+    // for only stats prog_name is mandatory
+    if (strlen(filename) == 0 && strlen(func_name) == 0)
     {
-        usage();
+        fprintf(stderr, "[%s]: -f or -n is mandatory\n", ERR);
         return 1;
     }
-
     // check mutual exclusive opt
     if (strlen(filename) > 0 && strlen(func_name) > 0)
     {
@@ -870,20 +822,7 @@ int main(int arg, char **argv)
     // if at least one metric is selected, allocate perf_event_fds
     if (selected_metrics_cnt > 0)
     {
-        perf_event_fds = malloc((selected_metrics_cnt * n_cpus) * sizeof(int));
-        for (int m = 0; m < selected_metrics_cnt; m++)
-        {
-            selected_metrics[m].acc_persection = malloc(MAX_MEASUREMENT * sizeof(struct section_stats));
-            if (!selected_metrics[m].acc_persection)
-            {
-                fprintf(stderr, "[%s]: allocating memory for section stats\n", ERR);
-                return 1;
-            }
-            selected_metrics[m].acc_persection->run_cnt = 0;
-            selected_metrics[m].acc_persection->acc_value = 0;
-            // define for safety
-            selected_metrics[m].acc_persection->name[0] = '\0';
-        }
+        start_perf(n_cpus);
     }
 
     // if enable_run_cnt is set, enable run count
@@ -931,9 +870,32 @@ int main(int arg, char **argv)
 
     fprintf(stdout, "[%s]: Loaded object...\n", INFO);
 
-    // get ring buffer if at least one metric is selected
+    err = get_psec_name_list(section_list);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: getting section name list\n", ERR);
+        return 1;
+    }
+
+    // print section list
+    for (int i = 0; i < 15; i++)
+    {
+        if (section_list[i][0] != 0)
+        {
+            fprintf(stdout, "[%s]: Section %d: %s\n", INFO, i, section_list[i]);
+        }
+    }
+
     if (selected_metrics_cnt > 0)
     {
+        // start perf before loading prog
+        err = start_perf(n_cpus); // perf fd will be freed during init_exit
+        if (err)
+        {
+            init_exit(0);
+            return 1;
+        }
+
         if (load)
         {
             array_map_fd = bpf_object__find_map_fd_by_name(obj, "percpu_output");
@@ -957,7 +919,8 @@ int main(int arg, char **argv)
             array_map_fd = bpf_obj_get(filename_map);
             if (array_map_fd < 0)
             {
-                fprintf(stderr, "[%s]: getting map fd from pinned path: %s\nbe sure %s program own 'percpu_output' map", ERR, filename_map, func_name);
+                fprintf(stderr, "[%s]: getting map fd from pinned path: %s\nbe sure %s program own 'percpu_output' map",
+                        ERR, filename_map, func_name);
                 return 1;
             }
         }
@@ -983,14 +946,6 @@ int main(int arg, char **argv)
         }
 
         free(reset);
-    }
-
-    // start perf before loading prog
-    err = start_perf(n_cpus); // perf fd will be freed during init_exit
-    if (err)
-    {
-        init_exit(0);
-        return 1;
     }
 
     // if user wants plot, do it
