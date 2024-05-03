@@ -33,7 +33,7 @@ struct bss
  * Find the data map in the bpf map list and return the file descriptor.
  * @return the file descriptor of the data map, error otherwise
  */
-int find_data_map()
+int get_bss_map_fd()
 {
     int fd = 0;
     unsigned int id = 0;
@@ -84,7 +84,7 @@ int set_counter(__u64 out_reg)
     int fd = -1;
     int err;
 
-    fd = find_data_map();
+    fd = get_bss_map_fd();
     if (fd < 0)
     {
         fprintf(stderr, "Failed to find data map\n");

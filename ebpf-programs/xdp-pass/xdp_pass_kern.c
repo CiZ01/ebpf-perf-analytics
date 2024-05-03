@@ -16,8 +16,6 @@ SEC("xdp") int xdp_pass_func(struct xdp_md *ctx)
 
     BPF_MYKPERF_END_TRACE_ARRAY(main);
 
-    // bpf_printk("value: %lld\n", end - start);
-
     return XDP_PASS;
 }
 

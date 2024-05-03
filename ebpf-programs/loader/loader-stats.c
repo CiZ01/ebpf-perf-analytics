@@ -40,7 +40,7 @@
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define MAX_METRICS 8
-#define MAX_MEASUREMENT 16
+#define MAX_MEASUREMENT 8
 #define PINNED_PATH "/sys/fs/bpf/"
 
 // metrics definition
@@ -50,7 +50,7 @@ struct profile_metric
     const __u64 code;
     int cpu;
     __u8 enabled;
-    struct record_array data_section;
+    struct record_array data_section[MAX_MEASUREMENT];
 } metrics[] = {
     {.name = "instructions", .code = 0x00c0},
     {.name = "cycles", .code = 0x003c},
@@ -123,7 +123,7 @@ int running_cpu;
 
 struct profile_metric selected_metrics[MAX_METRICS];
 int selected_metrics_cnt;
-char section_list[15][8];
+char section_list[8][15];
 
 // TODO - acc fn
 int accumulate;
@@ -160,7 +160,7 @@ static int get_run_count()
     int fd = 0;
     int zero = 0;
     fprintf(stdout, "[%s]: Getting run count\n", INFO);
-    fd = find_data_map();
+    fd = get_bss_map_fd();
     if (fd < 0)
     {
         fprintf(stderr, "[%s]: during finding data map\n", ERR);
@@ -196,7 +196,14 @@ static int start_perf(int n_cpus)
         }
         fprintf(stdout, "[%s]:   %s: %llx\n", DEBUG, selected_metrics[i].name, out_reg);
         selected_metrics[i].enabled = 1;
-        selected_metrics[i].data_section.counter = out_reg;
+        for (int i = 0; i < MAX_MEASUREMENT; i++)
+        {
+            if (section_list[i][0] != 0)
+            {
+                strcpy(selected_metrics[i].data_section[i].name, section_list[i]);
+                selected_metrics[i].data_section[i].counter = out_reg;
+            }
+        }
     }
     return 0;
 }
@@ -209,12 +216,19 @@ static void end_perf()
         if (selected_metrics[i].enabled)
         {
             fprintf(stdout, "[%s]: Disabling event %s\n", INFO, selected_metrics[i].name);
-            err = disable_event(selected_metrics[i].data_section.counter, selected_metrics[i].code,
-                                selected_metrics[i].cpu);
-            if (err < 0)
+            for (int j = 0; j < MAX_MEASUREMENT; j++)
             {
-                fprintf(stderr, "[%s]: during disabling event %s: %s\n", ERR, selected_metrics[i].name,
-                        strerror(errno));
+                if (section_list[i][0] != 0)
+                {
+                    strcpy(selected_metrics[i].data_section[i].name, section_list[i]);
+                    err = disable_event(selected_metrics[i].data_section[j].counter, selected_metrics[i].code,
+                                        selected_metrics[i].cpu);
+                    if (err < 0)
+                    {
+                        fprintf(stderr, "[%s]: during disabling event %s: %s\n", ERR, selected_metrics[i].name,
+                                strerror(errno));
+                    }
+                }
             }
             selected_metrics[i].enabled = 0;
         }
@@ -437,7 +451,6 @@ static void init_exit(int sig)
         profiler__destroy(profile_obj);
     }
 
-
     // print accumulated stats
     if (selected_metrics_cnt > 0)
     {
@@ -499,7 +512,7 @@ static void init_exit(int sig)
     exit(0);
 }
 
-void moving_avg(FILE *file_data)
+/* void moving_avg(FILE *file_data)
 {
     time_t t;
     time(&t);
@@ -532,7 +545,7 @@ void moving_avg(FILE *file_data)
     fflush(file_data);
     return;
 }
-
+ */
 int attach_profiler(struct bpf_program *prog)
 {
     int err;
@@ -658,7 +671,7 @@ static void poll_stats(unsigned int map_fd, __u32 timeout_ns)
             current_time = time(NULL);
             if (current_time - start_time > plot_cfg->poll_interval)
             {
-                moving_avg(plot_cfg->fp);
+                // moving_avg(plot_cfg->fp);
                 start_time = current_time;
             }
         }
@@ -666,18 +679,18 @@ static void poll_stats(unsigned int map_fd, __u32 timeout_ns)
     }
 }
 
-static int get_psec_name_list(char section_list_out[15][8])
+static int get_psec_name_list(char section_list_out[8][15])
 {
     int fd = 0;
     int zero = 0;
-    fd = find_data_map();
+    fd = get_rodata_map_fd();
     if (fd < 0)
     {
         fprintf(stderr, "[%s]: during finding data map\n", ERR);
         return -1;
     }
 
-    struct bss bss_data = {0};
+    struct rodata bss_data = {0};
 
     int err = bpf_map_lookup_elem(fd, &zero, &bss_data);
     if (err)
@@ -791,6 +804,15 @@ int main(int arg, char **argv)
         }
     }
 
+    // set cpu
+    if (running_cpu != 0)
+    {
+        for (int i = 0; i < selected_metrics_cnt; i++)
+        {
+            selected_metrics[i].cpu = running_cpu;
+        }
+    }
+
     // TODO: improve this
     // for loading filename and ifname are mandatory
     // for only stats prog_name is mandatory
@@ -817,12 +839,6 @@ int main(int arg, char **argv)
             "[%s]: -n is used to retrieve statistics from an already loaded program, use -l and -f to load a program\n",
             ERR);
         return 1;
-    }
-
-    // if at least one metric is selected, allocate perf_event_fds
-    if (selected_metrics_cnt > 0)
-    {
-        start_perf(n_cpus);
     }
 
     // if enable_run_cnt is set, enable run count
@@ -870,26 +886,17 @@ int main(int arg, char **argv)
 
     fprintf(stdout, "[%s]: Loaded object...\n", INFO);
 
-    err = get_psec_name_list(section_list);
-    if (err)
-    {
-        fprintf(stderr, "[%s]: getting section name list\n", ERR);
-        return 1;
-    }
-
-    // print section list
-    for (int i = 0; i < 15; i++)
-    {
-        if (section_list[i][0] != 0)
-        {
-            fprintf(stdout, "[%s]: Section %d: %s\n", INFO, i, section_list[i]);
-        }
-    }
-
     if (selected_metrics_cnt > 0)
     {
-        // start perf before loading prog
-        err = start_perf(n_cpus); // perf fd will be freed during init_exit
+        err = get_psec_name_list(section_list);
+        if (err)
+        {
+            fprintf(stderr, "[%s]: getting section name list\n", ERR);
+            return 1;
+        }
+
+        // enable PMC
+        err = start_perf(n_cpus);
         if (err)
         {
             init_exit(0);
@@ -933,11 +940,11 @@ int main(int arg, char **argv)
          */
 
         // update each element of the map with a zeroed array
-        unsigned char *reset = calloc(n_cpus, sizeof(struct record_array));
+        struct record_array *init_values = calloc(n_cpus, sizeof(struct record_array));
 
         for (__u32 key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
         {
-            err = bpf_map_update_elem(array_map_fd, &key, reset, 0);
+            err = bpf_map_update_elem(array_map_fd, &key, init_values, 0);
             if (err)
             {
                 fprintf(stderr, "[%s]: deleting map element: %s\n", ERR, strerror(errno));
@@ -945,7 +952,27 @@ int main(int arg, char **argv)
             }
         }
 
-        free(reset);
+        for (int i = 0; i < selected_metrics_cnt; i++)
+        {
+            if (!selected_metrics[i].enabled)
+                continue;
+            for (int j = 0; j < MAX_MEASUREMENT; j++)
+            {
+                if (selected_metrics[i].data_section[j].name[0] != 0)
+                {
+                    // update the init value
+                    init_values[running_cpu] = selected_metrics[i].data_section[j];
+                    err = bpf_map_update_elem(array_map_fd, &j, init_values, 0);
+                    if (err)
+                    {
+                        fprintf(stderr, "[%s]: during init map element: %s\n", ERR, strerror(errno));
+                        return 1;
+                    }
+                }
+                break;
+            }
+        }
+        free(init_values);
     }
 
     // if user wants plot, do it

@@ -12,7 +12,7 @@
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 
 #define RAND_FN bpf_get_prandom_u32()
-#define MAX_ENTRIES_PERCPU_ARRAY 16
+#define MAX_ENTRIES_PERCPU_ARRAY 8
 
 struct record_array
 {
@@ -35,7 +35,7 @@ struct record_array
         __uint(pinning, LIBBPF_PIN_BY_NAME);                                                                           \
     } percpu_output SEC(".maps");
 
-#define DEFINE_SECTIONS(...) const char __sections[15][8] = {__VA_ARGS__};
+#define DEFINE_SECTIONS(...) const char __sections[MAX_ENTRIES_PERCPU_ARRAY][15] = {__VA_ARGS__};
 
 #define COUNT_RUN __sync_fetch_and_add(&run_cnt, 1);
 
@@ -45,7 +45,7 @@ struct record_array
     struct record_array *sec_name = {0};                                                                               \
     __u32 key = __COUNTER__;                                                                                           \
     sec_name = bpf_map_lookup_elem(&percpu_output, &key);                                                              \
-    if (LIKELY(sec_name))                                                                                              \
+    if (sec_name && sec_name->name[0] != 0)                                                                            \
     {                                                                                                                  \
         value_##sec_name = bpf_mykperf__rdpmc(sec_name->counter);                                                      \
     }

@@ -15,7 +15,8 @@
 #include "mykperf_ioctl.h"
 
 #define PINNED_PROG_PATH "/sys/fs/bpf/"
-#define DATA_MAP ".bss"
+#define BSS_MAP ".bss"
+#define RODATA_MAP ".rodata"
 
 struct message
 {
@@ -28,14 +29,18 @@ struct bss
 {
     __u64 __sample_rate;
     __u64 run_cnt;
-    char sections[15][8];
+};
+
+struct rodata
+{
+    char sections[8][15];
 };
 
 /*
- * Find the data map in the bpf map list and return the file descriptor.
- * @return the file descriptor of the data map, error otherwise
+ * Find the bss map in the bpf map list and return the file descriptor.
+ * @return the file descriptor of the bss map, error otherwise
  */
-int find_data_map()
+int get_bss_map_fd()
 {
     int fd = 0;
     unsigned int id = 0;
@@ -63,7 +68,46 @@ int find_data_map()
             return err;
         }
 
-        if (strcmp(DATA_MAP, info.name + strlen(info.name) - strlen(DATA_MAP)) == 0)
+        if (strcmp(BSS_MAP, info.name + strlen(info.name) - strlen(BSS_MAP)) == 0)
+        {
+            break;
+        }
+        close(fd);
+    }
+    fprintf(stdout, "Map name: %s\n", info.name);
+    return fd;
+}
+
+int get_rodata_map_fd()
+{
+    unsigned int id = 0;
+    int err;
+
+    int fd = -1;
+
+    struct bpf_map_info info = {};
+    __u32 len = sizeof(info);
+    while (1)
+    {
+        err = bpf_map_get_next_id(id, &id);
+        if (err)
+        {
+            return err;
+        }
+
+        fd = bpf_map_get_fd_by_id(id);
+        if (fd < 0)
+        {
+            return err;
+        }
+
+        err = bpf_map_get_info_by_fd(fd, &info, &len);
+        if (err)
+        {
+            return err;
+        }
+
+        if (strcmp(RODATA_MAP, info.name + strlen(info.name) - strlen(RODATA_MAP)) == 0)
         {
             break;
         }
@@ -86,7 +130,7 @@ int find_data_map()
     int fd = -1;
     int err;
 
-    fd = find_data_map();
+    fd = get_bss_map_fd();
     if (fd < 0)
     {
         fprintf(stderr, "Failed to find data map\n");
