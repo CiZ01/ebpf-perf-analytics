@@ -18,6 +18,9 @@
 #define BSS_MAP ".bss"
 #define RODATA_MAP ".rodata"
 
+#define MAX_PROG_FULL_NAME 15
+#define MAX_PSECTIONS 8
+
 struct message
 {
     __u64 event;
@@ -33,7 +36,7 @@ struct bss
 
 struct rodata
 {
-    char sections[8][15];
+    char sections[MAX_PSECTIONS][MAX_PROG_FULL_NAME];
 };
 
 /*
@@ -166,7 +169,7 @@ int get_rodata_map_fd()
  * @param out_reg: the register where to write the result
  * @return 0 if the operation is successful, -1 otherwise
  */
-int enable_event(__u64 event, __u64 *out_reg, int cpu)
+int enable_event(__u64 event, int *out_reg, int cpu)
 {
     int fd;
     fd = open(DEVICE_FILE, O_RDWR);
@@ -208,7 +211,7 @@ int enable_event(__u64 event, __u64 *out_reg, int cpu)
  * @param event: the event to disable
  * @return 0 if the operation is successful, -1 otherwise
  */
-int disable_event(__u64 reg, __u64 event, int cpu)
+int disable_event(__u64 event, __u64 reg, int cpu)
 {
     struct message msg = {
         .event = event,
