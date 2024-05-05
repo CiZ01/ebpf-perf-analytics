@@ -47,10 +47,12 @@ struct event
 
 struct psection_t
 {
-    struct record_array record;
+    struct record_array *record;
     struct event *metric;
 };
 
+
+// ---- EVENT ----------
 static struct event *event__get_by_name(const char *name)
 {
     for (int i = 0; i < ARRAY_SIZE(metrics); i++)

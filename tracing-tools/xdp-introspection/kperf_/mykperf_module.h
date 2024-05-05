@@ -51,7 +51,7 @@ struct record_array
     }
 
 #define BPF_MYKPERF_END_TRACE_ARRAY(sec_name)                                                                          \
-    if (LIKELY(sec_name))                                                                                              \
+    if (sec_name)                                                                                                      \
     {                                                                                                                  \
         sec_name->value +=                                                                                             \
             (__u64)__builtin_elementwise_abs((int)(bpf_mykperf__rdpmc(sec_name->counter) - value_##sec_name));         \
@@ -60,9 +60,15 @@ struct record_array
 
 #define BPF_MYKPERF_START_TRACE_ARRAY_SAMPLED(sec_name)                                                                \
     __u64 value_##sec_name = 0;                                                                                        \
+    struct record_array *sec_name = {0};                                                                               \
     if (UNLIKELY(run_cnt % __sample_rate == 0))                                                                        \
     {                                                                                                                  \
-        value_##sec_name = bpf_mykperf__rdpmc(reg_counter);                                                            \
+        __u32 key = __COUNTER__;                                                                                       \
+        sec_name = bpf_map_lookup_elem(&percpu_output, &key);                                                          \
+        if (sec_name && sec_name->name[0] != 0)                                                                        \
+        {                                                                                                              \
+            value_##sec_name = bpf_mykperf__rdpmc(sec_name->counter);                                                  \
+        }                                                                                                              \
     }
 
 // --------------------- RING BUFFER --------------------------------

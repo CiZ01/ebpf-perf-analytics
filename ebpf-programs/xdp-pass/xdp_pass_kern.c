@@ -3,19 +3,20 @@
 
 #include "mykperf_module.h"
 
-__u64 bpf_mykperf_read_rdpmc(__u8 counter__k) __ksym;
+__u64 bpf_mykperf_read_rdpmc(__u8 counter) __ksym;
 
 BPF_MYKPERF_INIT_TRACE();
 DEFINE_SECTIONS("main");
 
 SEC("xdp") int xdp_pass_func(struct xdp_md *ctx)
 {
-    BPF_MYKPERF_START_TRACE_ARRAY(main);
+    BPF_MYKPERF_START_TRACE_ARRAY_SAMPLED(main);
 
     // volatile int cpu = bpf_get_smp_processor_id();
 
     BPF_MYKPERF_END_TRACE_ARRAY(main);
 
+    COUNT_RUN;
     return XDP_PASS;
 }
 
