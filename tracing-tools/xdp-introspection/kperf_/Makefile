@@ -1,10 +1,13 @@
 obj-m += mykperf_module.o
-
+HELPERS = mykperf_helpers
 
 all:
 	@echo "Building mykperf_module..."
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules 
+	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules -lbpf
 	
+	@echo "Building $(OBJS)..."
+	gcc -o $(HELPERS).o -c $(HELPERS).c	
+
 	@echo "Copying mykperf_module.h in /usr/local/include/mykperf"
 	sudo mkdir -p /usr/local/include/mykperf
 	sudo cp ./mykperf_module.h /usr/local/include/mykperf/mykperf_module.h

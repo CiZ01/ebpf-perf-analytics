@@ -10,7 +10,11 @@
 #define INFO "\033[1;32mINFO\033[0m"
 #define DEBUG "\033[1;34mDEBUG\033[0m"
 
-#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+// #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+//  this is needed because of the way the metrics are defined
+// ARRAY SIZE not work with extern
+#define METRICS_NR 4
+
 #define MAX_METRICS 8
 #define MAX_PSECTIONS 8
 #define PINNED_PATH "/sys/fs/bpf/"
@@ -25,25 +29,9 @@ struct event
     int cpu; // now, work with just one cpu
     int reg_h;
     __u8 enabled;
-} metrics[] = {
-    {.name = "instructions", .code = 0x00c0},
-    {.name = "cycles", .code = 0x003c},
-    {.name = "cache-misses", .code = 0x2e41},
-    {.name = "llc-misses", .code = 0x01b7},
-    // questi dopo vanno settati
-    {"branch_misses", 0x30c},
-    {"bus_cycles", 0x30b},
-    {"stalled_cycles_frontend", 0x30d},
-    {"stalled_cycles_backend", 0x30e},
-    {"ref_cpu_cycles", 0x30f},
-    {"cpu_clock", 0x309},
-    {"task_clock", 0x30a},
-    {"page_faults", 0x30b},
-    {"context_switches", 0x30c},
-    {"cpu_migrations", 0x30d},
-    {"page_faults_min", 0x30e},
-    {"page_faults_maj", 0x30f},
 };
+
+extern struct event metrics[];
 
 struct psection_t
 {
@@ -51,11 +39,10 @@ struct psection_t
     struct event *metric;
 };
 
-
 // ---- EVENT ----------
 static struct event *event__get_by_name(const char *name)
 {
-    for (int i = 0; i < ARRAY_SIZE(metrics); i++)
+    for (int i = 0; i < METRICS_NR; i++)
     {
         if (strcmp(metrics[i].name, name) == 0)
         {
@@ -91,7 +78,7 @@ static int event__disable(struct event *event, int cpu)
 
 static int event__name_isvalid(char *name)
 {
-    for (int i = 0; i < ARRAY_SIZE(metrics); i++)
+    for (int i = 0; i < METRICS_NR; i++)
     {
         if (strcmp(metrics[i].name, name) == 0)
         {

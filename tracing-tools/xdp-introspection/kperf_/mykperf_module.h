@@ -1,5 +1,9 @@
-#ifndef MYKEPERF_MODULE_H
-#define MYKEPERF_MODULE_H
+#ifndef __MYKEPERF_MODULE_H__
+#define __MYKEPERF_MODULE_H__
+
+#include <linux/if_link.h>
+#include <linux/bpf.h>
+
 
 #ifdef INTEL_CPU
 #define get_counter(counter) 1 << 30 + counter
@@ -89,4 +93,4 @@ struct record_array
         bpf_ringbuf_submit(sec_name, 0);                                                                               \
     }
 
-#endif // _XDPMYCHARDEV_H_
+#endif // __MYKEPERF_MODULE_H__

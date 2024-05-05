@@ -10,8 +10,9 @@ DEFINE_SECTIONS("main");
 
 SEC("xdp") int xdp_pass_func(struct xdp_md *ctx)
 {
-    BPF_MYKPERF_START_TRACE_ARRAY_SAMPLED(main);
+    BPF_MYKPERF_START_TRACE_ARRAY(main);
 
+    bpf_printk("ciao");
     // volatile int cpu = bpf_get_smp_processor_id();
 
     BPF_MYKPERF_END_TRACE_ARRAY(main);

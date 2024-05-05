@@ -7,17 +7,25 @@
 #include <unistd.h>
 #include <time.h>
 
-// xdp prog management
+// if_nametoindex
+#include <net/if.h>
+
 #include <linux/if_link.h>
 #include <linux/bpf.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 
-// if_nametoindex
-#include <net/if.h>
-
 // my modules
 #include "inxpect.h"
+#include "inxpect-server.h"
+#include "mykperf_helpers.h"
+
+struct event metrics[4] = {
+    {.name = "instructions", .code = 0x00c0},
+    {.name = "cycles", .code = 0x003c},
+    {.name = "cache-misses", .code = 0x2e41},
+    {.name = "llc-misses", .code = 0x01b7},
+};
 
 // --- GLOBALS ---
 char prog_name[MAX_PROG_FULL_NAME];
@@ -34,6 +42,10 @@ char *arg__event = NULL;
 int nr_selected_events = 0;
 int running_cpu = 0;
 int sample_rate = 0;
+
+// server
+int interactive_mode = 0;
+pid_t server_process = 0;
 
 // from bpftool
 static int prog_fd_by_nametag(char nametag[MAX_PROG_FULL_NAME])
@@ -356,6 +368,11 @@ static void poll_stats(__u32 timeout_s)
 
 static void exit_cleanup(int signo)
 {
+    if (server_process)
+    {
+        inxpect_server__close();
+        exit(EXIT_SUCCESS);
+    }
 
     // get the last not yet readed events
     for (int key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
@@ -412,7 +429,7 @@ int main(int argc, char **argv)
 {
     int err, opt;
     // retrieve opt
-    while ((opt = getopt(argc, argv, ":n:e:C:s:ac")) != -1)
+    while ((opt = getopt(argc, argv, ":n:e:C:s:aic")) != -1)
     {
         switch (opt)
         {
@@ -440,6 +457,9 @@ int main(int argc, char **argv)
             break;
         case 'a':
             do_accumulate = 1;
+            break;
+        case 'i':
+            interactive_mode = 1;
             break;
         case '?':
             fprintf(stderr, "%s: invalid option\n", ERR);
@@ -570,6 +590,30 @@ int main(int argc, char **argv)
     err = percput_output__clean_and_init();
     if (err)
         exit_cleanup(0);
+
+    if (interactive_mode)
+    { // fork the server, the parent will poll the stats
+        server_process = fork();
+        if (server_process == 0)
+        {
+            err = inxpect_server__init_server(0);
+            if (err)
+            {
+                exit_cleanup(0);
+            }
+
+            err = inxpect_server__start_and_polling();
+            if (err)
+            {
+                exit_cleanup(0);
+            }
+        }
+        else if (server_process < 0)
+        {
+            fprintf(stderr, "[%s]: during forking, server not started\n", ERR);
+            exit_cleanup(0);
+        }
+    }
 
     // polling stats
     poll_stats(3);
