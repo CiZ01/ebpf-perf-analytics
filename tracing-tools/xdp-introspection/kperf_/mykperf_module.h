@@ -4,7 +4,6 @@
 #include <linux/if_link.h>
 #include <linux/bpf.h>
 
-
 #ifdef INTEL_CPU
 #define get_counter(counter) 1 << 30 + counter
 #else

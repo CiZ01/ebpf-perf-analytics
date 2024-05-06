@@ -46,7 +46,7 @@ int sample_rate = 0;
 
 // server
 int interactive_mode = 0;
-pid_t server_process = 0;
+pid_t server_process = -1;
 
 // from bpftool
 static int prog_fd_by_nametag(char nametag[MAX_PROG_FULL_NAME])
@@ -369,7 +369,7 @@ static void poll_stats()
 
 static void exit_cleanup(int signo)
 {
-    if (server_process)
+    if (server_process == 0)
     {
         inxpect_server__close();
         exit(EXIT_SUCCESS);
@@ -383,7 +383,7 @@ static void exit_cleanup(int signo)
             break;
         }
 
-        if (bpf_map_lookup_elem(percpu_output_fd, &key, percpu_data))
+        if (bpf_map_lookup_elem(percpu_output_fd, &key, percpu_data) < 0)
         {
             continue;
         }
@@ -595,8 +595,8 @@ int main(int argc, char **argv)
     if (err)
         exit_cleanup(0);
 
-    if (interactive_mode)
-    { // fork the server, the parent will poll the stats
+    if (interactive_mode) // SERVER
+    {                     // fork the server, the parent will poll the stats
         server_process = fork();
         if (server_process == 0)
         {
