@@ -31,6 +31,7 @@ struct event metrics[4] = {
 char prog_name[MAX_PROG_FULL_NAME];
 struct psection_t psections[MAX_PSECTIONS];
 int do_run_count = 0;
+int timeout_s = 3;
 
 // percpu map
 int percpu_output_fd = -1;
@@ -341,7 +342,7 @@ static int handle_event(struct record_array percpu_data[MAX_ENTRIES_PERCPU_ARRAY
     return 0;
 }
 
-static void poll_stats(__u32 timeout_s)
+static void poll_stats()
 {
     int err;
 
@@ -429,7 +430,7 @@ int main(int argc, char **argv)
 {
     int err, opt;
     // retrieve opt
-    while ((opt = getopt(argc, argv, ":n:e:C:s:aic")) != -1)
+    while ((opt = getopt(argc, argv, ":n:e:C:s:t:aic")) != -1)
     {
         switch (opt)
         {
@@ -448,6 +449,9 @@ int main(int argc, char **argv)
             break;
         case 'C':
             running_cpu = atoi(optarg);
+            break;
+        case 't':
+            timeout_s = atoi(optarg);
             break;
         case 's':
             sample_rate = atoi(optarg);
@@ -616,7 +620,7 @@ int main(int argc, char **argv)
     }
 
     // polling stats
-    poll_stats(3);
+    poll_stats();
     exit_cleanup(0);
     return 0;
 }

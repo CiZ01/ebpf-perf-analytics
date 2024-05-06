@@ -27,4 +27,4 @@ ebpf-programs/loader/loader
 *.symvers
 *.cmd
 
-inxpect
+inxpect/inxpect
