@@ -113,7 +113,15 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
         return -1;
     }
 
-    memcpy(psections_name_list, bss_data.sections, sizeof(bss_data.sections));
+    for (int i = 0; i < MAX_PSECTIONS; i++)
+    {
+        if (bss_data.sections[i][0] == 0)
+        {
+            break;
+        }
+        printf("section: %s\n", bss_data.sections[i]);
+        strncpy(psections_name_list[i], bss_data.sections[i], sizeof(bss_data.sections[i]));
+    }
 
     close(fd);
     return 0;
@@ -532,6 +540,7 @@ int main(int argc, char **argv)
     // setting psections
     for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
     {
+        printf("psection: %s\n", psections_name_list[i_sec]);
         if (strlen(psections_name_list[i_sec]) == 0)
         {
             psections[i_sec].record = NULL;

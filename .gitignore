@@ -26,5 +26,8 @@ ebpf-programs/loader/loader
 *.order
 *.symvers
 *.cmd
+*.o.d
 
+
+target/
 inxpect/inxpect

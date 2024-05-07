@@ -88,4 +88,99 @@ static int event__name_isvalid(char *name)
     return 0;
 }
 
+// -------------------------------------
+
+// ---------------- PSECTIONS ----------
+
+extern struct psection_t psections[];
+static struct psection_t *psection__get_by_name(const char *name)
+{
+    for (int i = 0; i < MAX_PSECTIONS; i++)
+    {
+        if (strcmp(psections[i].record->name, name) == 0)
+        {
+            return &psections[i];
+        }
+    }
+    return NULL;
+}
+
+static int psection__change_event(struct psection_t *psection, const char *event_name)
+{
+    struct event *event = event__get_by_name(event_name);
+    if (!event)
+    {
+        return -1;
+    }
+    if (!event->enabled)
+    {
+        int err = event__enable(event, event->cpu);
+        if (err)
+        {
+            return -1;
+        }
+    }
+    psection->metric = event;
+    return 0;
+}
+
+static int psection__event_disable(struct psection_t *psection)
+{
+    if (!psection->metric)
+    {
+        return 0;
+    }
+
+    if (psection->metric->enabled == 1)
+    {
+        int err = event__disable(psection->metric, psection->metric->cpu);
+        if (err)
+        {
+            return -1;
+        }
+        return 0;
+    }
+
+    psection->metric->enabled--;
+    psection->metric = NULL;
+    return 0;
+}
+
+static int psection__set_event(struct psection_t *psection, struct event *event)
+{
+    if (psection->metric)
+    {
+        psection__event_disable(psection);
+    }
+
+    if (!event->enabled)
+    {
+        int err = event__enable(event, event->cpu);
+        if (err)
+        {
+            return -1;
+        }
+    }
+    else
+    {
+        event->enabled++; // count how much psections are using this event
+    }
+    psection->metric = event;
+    return 0;
+}
+
+// get all psection in json
+static void psection__get_all(char *json)
+{
+    json[0] = '[';
+    for (int i = 0; i < MAX_PSECTIONS; i++)
+    {
+        if (psections[i].record)
+        {
+            strcat(json, psections[i].record->name);
+            strcat(json, ",");
+        }
+    }
+    json[strlen(json) - 1] = ']';
+}
 #endif // __INXPECT_H__
