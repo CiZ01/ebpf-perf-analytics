@@ -183,4 +183,51 @@ static void psection__get_all(char *json)
     }
     json[strlen(json) - 1] = ']';
 }
+
+// ----------- SAMPLE RATE -----------------
+static int sample_rate__set(int sample_rate)
+{
+    int fd = -1;
+    int zero = 0;
+    fd = get_bss_map_fd();
+    if (fd < 0)
+    {
+        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        return -1;
+    }
+
+    struct bss bss_data = {0};
+
+    int err = bpf_map_lookup_elem(fd, &zero, &bss_data);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during setting sample rate\n", ERR);
+        return -1;
+    }
+
+    bss_data.__sample_rate = sample_rate;
+
+    err = bpf_map_update_elem(fd, &zero, &bss_data, BPF_ANY);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during setting sample rate\n", ERR);
+        return -1;
+    }
+
+    close(fd);
+    return 0;
+}
+
+// -------------------------------------------------
+
+// ------------------- DATA -----------------------
+struct record_array *stats__get_by_psection_name(char *name)
+{
+    struct psection_t *psection = psection__get_by_name(name);
+    if (!psection)
+    {
+        return -1;
+    }
+    return psection->record;
+}
 #endif // __INXPECT_H__

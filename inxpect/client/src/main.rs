@@ -185,47 +185,4 @@ fn main() -> io::Result<()> {
     let mut console = Console::new(ix);
     console.run()?;
     Ok(())
-    /*  let mut client = InxpectClient::new("0.0.0.0".to_string(), 8080);
-
-       let ret = client.request_get_psections();
-
-       println!("{:?}", ret);
-
-       println!(
-           "{:?}",
-           client.request_psection_change_event("main".to_string(), "cycles".to_string()),
-       );
-
-       let ret2 = client.request_get_psections();
-       println!("{:?}", ret2);
-    */
-    /*  let mut buffer_map = Map::new();
-    buffer_map.insert("name".to_string(), Value::String("main".to_string()));
-    buffer_map.insert("event".to_string(), Value::String("cycles".to_string()));
-
-    // Convert the map to a JSON value
-    let buffer_value = Value::Object(buffer_map);
-
-    // Create the message
-    let message = InxpectServerMessage::new(1, 0, buffer_value);
-
-    // Serialize the data to JSON
-    let json_data = serde_json::to_string(&message)?; */
-
-    /*    // Send the JSON data to the server
-    stream.write_all(json_data.as_bytes())?;
-
-    // Read the response from the server
-    let mut buffer = [0; 1024];
-    let bytes_read = stream.read(&mut buffer)?;
-
-    // Convert the response to a string
-    let response = String::from_utf8_lossy(&buffer[..bytes_read]);
-
-    // Deserialize the response JSON
-    let received_data: InxpectServerMessage = serde_json::from_str(&response)?;
-
-    println!("Received code: {}", received_data.code);
-    println!("Received value: {}", received_data.value);
-    println!("Received buffer: {}", received_data.buffer); */
 }

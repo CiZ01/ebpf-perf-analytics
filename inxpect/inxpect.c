@@ -119,41 +119,7 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
         {
             break;
         }
-        printf("section: %s\n", bss_data.sections[i]);
         strncpy(psections_name_list[i], bss_data.sections[i], sizeof(bss_data.sections[i]));
-    }
-
-    close(fd);
-    return 0;
-}
-
-static int sample_rate__set(int sample_rate)
-{
-    int fd = -1;
-    int zero = 0;
-    fd = get_bss_map_fd();
-    if (fd < 0)
-    {
-        fprintf(stderr, "[%s]: during finding data map\n", ERR);
-        return -1;
-    }
-
-    struct bss bss_data = {0};
-
-    int err = bpf_map_lookup_elem(fd, &zero, &bss_data);
-    if (err)
-    {
-        fprintf(stderr, "[%s]: during setting sample rate\n", ERR);
-        return -1;
-    }
-
-    bss_data.__sample_rate = sample_rate;
-
-    err = bpf_map_update_elem(fd, &zero, &bss_data, BPF_ANY);
-    if (err)
-    {
-        fprintf(stderr, "[%s]: during setting sample rate\n", ERR);
-        return -1;
     }
 
     close(fd);
@@ -371,7 +337,7 @@ static void poll_stats()
             }
             handle_event(percpu_data, key);
         }
-        sleep(timeout_s);
+        usleep(timeout_s);
     }
 }
 
@@ -540,7 +506,6 @@ int main(int argc, char **argv)
     // setting psections
     for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
     {
-        printf("psection: %s\n", psections_name_list[i_sec]);
         if (strlen(psections_name_list[i_sec]) == 0)
         {
             psections[i_sec].record = NULL;

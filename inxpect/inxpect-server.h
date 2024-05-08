@@ -47,12 +47,13 @@ int inxpect_server__start_and_polling();
 int handler();
 void inxpect_server__close();
 int inxpect_response__unknown(int sock, struct inxpect_server__message_t *msg);
+
+// ----- SERVER RESPONSES -----
 int inxpect_response__event_set(int sock, struct inxpect_server__message_t *msg);
 int inxpect_response__event_get(int sock, struct inxpect_server__message_t *msg);
 int inxpect_response__sample_rate_set(int sock, struct inxpect_server__message_t *msg);
 int inxpect_response__psections_get(int sock, struct inxpect_server__message_t *msg);
-
-// ----- SERVER RESPONSES -----
+int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server__message_t *msg);
 // ----------------------------
 
 #endif // __INXPECT_SERVER_H__

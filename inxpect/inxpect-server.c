@@ -18,14 +18,6 @@
 #include "inxpect.h"
 #include "inxpect-server.h"
 
-#define CLEAN_MESSAGE(msg_ptr)                                                                                         \
-    do                                                                                                                 \
-    {                                                                                                                  \
-        (msg_ptr)->code = 0;                                                                                           \
-        (msg_ptr)->value = 0;                                                                                          \
-                                                                                                                       \
-    } while (0)
-
 int server_fd, client_socket, opt = 1;
 struct sockaddr_in address;
 int addrlen = sizeof(address);
@@ -269,6 +261,78 @@ int inxpect_response__psections_get(int sock, struct inxpect_server__message_t *
     send(sock, json, strlen(json), 0);
     cJSON_Delete(root);
     free(json);
+
+    return 0;
+}
+
+int inxpect_response__sample_rate_set(int sock, struct inxpect_server__message_t *msg)
+{
+    if (msg->value == 0)
+    {
+        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INVALID;
+        msg->buffer = NULL;
+        sendMessage(sock, *msg);
+        return -1;
+    }
+    int err;
+    err = sample_rate__set(msg->value);
+    if (err)
+    {
+        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INTERNAL;
+        msg->buffer = NULL;
+        sendMessage(sock, *msg);
+        return -1;
+    }
+
+    msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+    msg->value = INXPECT_SERVER__MESSAGE_ERROR__NONE;
+    msg->buffer = NULL;
+    sendMessage(sock, *msg);
+    return 0;
+}
+
+int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server__message_t *msg)
+{
+    cJSON *root = cJSON_Parse(msg->buffer);
+    cJSON *psection_name = cJSON_GetObjectItemCaseSensitive(root, "name");
+    if (!cJSON_IsString(psection_name))
+    {
+        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INVALID;
+        msg->buffer = NULL;
+        sendMessage(sock, *msg);
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON_Delete(root);
+
+    struct record_array *record = stats__get_by_psection_name(psection_name->valuestring);
+    if (err < 0)
+    {
+        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INTERNAL;
+        msg->buffer = NULL;
+        sendMessage(sock, *msg);
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+    msg->value = INXPECT_SERVER__MESSAGE_ERROR__NONE;
+
+    cJSON *buffer_json = cJSON_CreateObject();
+    cJSON_AddStringToObject(buffer_json, "name", record->name);
+    cJSON_AddNumberToObject(buffer_json, "value", record->value);
+    cJSON_AddNumberToObject(buffer_json, "run_cnt", record->run_cnt);
+    cJSON_AddNumberToObject(buffer_json, "counter", record->counter);
+
+    msg->buffer = cJSON_Print(buffer_json);
+    sendMessage(sock, *msg);
+
+    cJSON_Delete(buffer_json);
 
     return 0;
 }
