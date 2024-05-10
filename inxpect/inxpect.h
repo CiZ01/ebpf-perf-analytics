@@ -127,12 +127,26 @@ static struct psection_t *psection__get_by_name(const char *name)
 static int __update_record_on_map(int map_fd, struct record_array *record, int cpu)
 {
     int key = psection__get_index_by_name(record->name);
-    struct record_array *percpu_data = calloc(libbpf_num_possible_cpus(), sizeof(struct record_array));
+    if (key < 0)
+        return -1;
+
     int err = 0;
+    struct record_array *percpu_data = calloc(libbpf_num_possible_cpus(), sizeof(struct record_array));
     err = bpf_map_lookup_elem(map_fd, &key, percpu_data);
+    if (err)
+    {
+        free(percpu_data);
+        return -1;
+    }
 
     percpu_data[cpu] = *record;
-    return bpf_map_update_elem(map_fd, &key, percpu_data, BPF_ANY);
+    err = bpf_map_update_elem(map_fd, &key, percpu_data, BPF_ANY);
+    free(percpu_data);
+    if (err)
+    {
+        return -1;
+    }
+    return 0;
 }
 
 static int psection__change_event(struct psection_t *psection, const char *event_name)
@@ -144,19 +158,30 @@ static int psection__change_event(struct psection_t *psection, const char *event
     }
     if (!event->enabled)
     {
-        int err = event__enable(event, event->cpu);
+        int err = event__enable(event, psection->metric->cpu);
         if (err)
         {
             return -1;
         }
     }
 
-    if (__update_record_on_map(percpu_output_fd, psection->record, psection->metric->cpu))
+    struct record_array tmp_record = *psection->record;
+
+    // update values
+    tmp_record.counter = event->reg_h;
+    tmp_record.value = 0;
+    tmp_record.run_cnt = 0;
+
+    if (__update_record_on_map(percpu_output_fd, &tmp_record, psection->metric->cpu))
     {
         return -1;
     }
+
+    // if all goes well, I update in userspace
     psection->metric = event;
-    psection->record->counter = psection->metric->reg_h;
+
+    fprintf(stdout, "[%s]:  %s: %x\n", DEBUG, event->name, event->reg_h);
+    memcpy(psection->record, &tmp_record, sizeof(struct record_array));
     return 0;
 }
 

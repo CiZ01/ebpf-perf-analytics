@@ -58,7 +58,6 @@ impl InxpectClient {
     fn request_get_psections(&mut self) -> io::Result<Value> {
         let mut message = InxpectServerMessage::new(4, 0, Value::Null);
 
-        // Send the message to the server
         self.send_message(message)?;
 
         message = self.receive_message()?;
@@ -128,14 +127,14 @@ impl Console {
         Ok(())
     }
 
-    fn parse_get_command(&mut self, get_command: Vec<&str>) {
+    fn parse_get_command(&mut self, get_command: Vec<&str>) -> io::Result<()> {
         match get_command[0] {
             "psections" => {
                 if get_command.len() > 1 {
                     println!("{0} command not need arguments!", get_command[0]);
                     // this could be a macro
                 }
-                self.pretty_print_get_psections().unwrap();
+                self.pretty_print_get_psections()?;
             }
             _ => println!("Unkwon {0} command using get!", get_command[0]),
         }
@@ -165,11 +164,13 @@ impl Console {
         for psection in psections.as_array().unwrap() {
             println!("\t{}", psection);
         }
-
-        Ok(())
     }
 
-    fn pretty_print_psection_change_event(&mut self, psection_name: &str, event_name: &str) {
+    fn pretty_print_psection_change_event(
+        &mut self,
+        psection_name: &str,
+        event_name: &str,
+    ) -> io::Result<()> {
         _ = self
             .client
             .request_psection_change_event(&psection_name, &event_name);
