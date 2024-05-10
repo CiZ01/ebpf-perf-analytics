@@ -3,6 +3,9 @@ use serde_json::{self, Map, Value};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
+mod errors;
+use errors::InxpectServerErr;
+
 #[derive(Serialize, Deserialize)]
 struct InxpectServerMessage {
     code: i32,
@@ -56,13 +59,21 @@ impl InxpectClient {
     }
 
     fn request_get_psections(&mut self) -> io::Result<Value> {
-        let mut message = InxpectServerMessage::new(4, 0, Value::Null);
+        let message = InxpectServerMessage::new(4, 0, Value::Null);
 
-        self.send_message(message)?;
-
-        message = self.receive_message()?;
-
-        Ok(message.buffer)
+        match self.send_message(message) {
+            Ok(()) => match self.receive_message() {
+                Ok(message) => match message.value {
+                    0 => Ok(message.buffer),
+                    _ => Err(InxpectServerErr {
+                        code: 1,
+                        message: "ciao",
+                    }),
+                },
+                Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Error during receive")),
+            },
+            Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Error during sending")),
+        }
     }
 
     fn request_psection_change_event(
@@ -77,14 +88,21 @@ impl InxpectClient {
         // Convert the map to a JSON value
         let buffer_value = Value::Object(buffer_map);
 
-        let mut message = InxpectServerMessage::new(1, 0, buffer_value);
+        let message = InxpectServerMessage::new(1, 0, buffer_value);
 
-        // Send the message to the server
-        self.send_message(message)?;
-
-        message = self.receive_message()?;
-
-        Ok(message.buffer)
+        match self.send_message(message) {
+            Ok(()) => match self.receive_message() {
+                Ok(message) => match message.value {
+                    0 => Ok(message.buffer),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        message.value.to_string(),
+                    )),
+                },
+                Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Error during receive")),
+            },
+            Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Error during sending")),
+        }
     }
 }
 
@@ -127,14 +145,14 @@ impl Console {
         Ok(())
     }
 
-    fn parse_get_command(&mut self, get_command: Vec<&str>) -> io::Result<()> {
+    fn parse_get_command(&mut self, get_command: Vec<&str>) {
         match get_command[0] {
             "psections" => {
                 if get_command.len() > 1 {
                     println!("{0} command not need arguments!", get_command[0]);
                     // this could be a macro
                 }
-                self.pretty_print_get_psections()?;
+                self.pretty_print_get_psections();
             }
             _ => println!("Unkwon {0} command using get!", get_command[0]),
         }
@@ -158,12 +176,17 @@ impl Console {
     }
     // MISSING ERROR CHECKING
     fn pretty_print_get_psections(&mut self) -> io::Result<()> {
-        let psections = self.client.request_get_psections()?;
-
-        println!("Psections:");
-        for psection in psections.as_array().unwrap() {
-            println!("\t{}", psection);
+        match self.client.request_get_psections() {
+            Ok(psections) => {
+                println!("Psections:");
+                for psection in psections.as_array().unwrap() {
+                    println!("\t{}", psection);
+                }
+            }
+            Err(_) => println(),
         }
+
+        Ok(())
     }
 
     fn pretty_print_psection_change_event(
