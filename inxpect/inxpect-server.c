@@ -310,7 +310,7 @@ int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server
     cJSON_Delete(root);
 
     struct record_array *record = stats__get_by_psection_name(psection_name->valuestring);
-    if (err < 0)
+    if (!record)
     {
         msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
         msg->value = INXPECT_SERVER__MESSAGE_ERROR__INTERNAL;

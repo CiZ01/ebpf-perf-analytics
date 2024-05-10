@@ -205,57 +205,6 @@ static int percpu_output__get_fd()
     return map_fd;
 }
 
-static int percput_output__clean_and_init()
-{
-    int err;
-    /*    unsigned int count = MAX_PSECTIONS;
-       int *keys = malloc(MAX_PSECTIONS * sizeof(int));
-       // clean the map
-       int err = bpf_map_delete_batch(percpu_output_fd, keys, &count, NULL);
-       if (err)
-       {
-           fprintf(stderr, "[%s]: during cleaning map: %s\n", ERR, strerror(errno));
-           fprintf(stderr, "[%s]: %d\n", DEBUG, count);
-           free(keys);
-           return -1;
-       }
-       free(keys);
-    */
-
-    // init the map
-    int nr_cpus = libbpf_num_possible_cpus();
-    struct record_array *percpu_values = calloc(nr_cpus, sizeof(struct record_array));
-
-    for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
-    {
-        if (!psections[i_sec].record)
-        {
-            break;
-        }
-
-        percpu_values[running_cpu] = *psections[i_sec].record;
-
-        err = bpf_map_update_elem(percpu_output_fd, &i_sec, percpu_values, BPF_ANY);
-        if (err)
-        {
-            fprintf(stderr, "[%s]: during updating map\n", ERR);
-            free(percpu_values);
-            return -1;
-        }
-    }
-
-    err = run_count__reset();
-    if (err)
-    {
-        free(percpu_values);
-        return -1;
-    }
-
-    free(percpu_values);
-
-    return 0;
-}
-
 static void print_accumulated_stats()
 {
     char *fmt = "%s: %llu   %.2f/pkt - %u run_cnt\n";
@@ -337,7 +286,7 @@ static void poll_stats()
             }
             handle_event(percpu_data, key);
         }
-        usleep(timeout_s);
+        sleep(timeout_s);
     }
 }
 
@@ -565,9 +514,15 @@ int main(int argc, char **argv)
     signal(SIGINT, exit_cleanup);
     signal(SIGTERM, exit_cleanup);
 
-    err = percput_output__clean_and_init();
+    err = percput_output__clean_and_init(percpu_output_fd, running_cpu);
     if (err)
         exit_cleanup(0);
+
+    err = run_count__reset();
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during run count reset\n", WARN);
+    }
 
     if (interactive_mode) // SERVER
     {                     // fork the server, the parent will poll the stats

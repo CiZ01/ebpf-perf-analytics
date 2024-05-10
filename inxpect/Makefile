@@ -3,7 +3,7 @@ SRCS := $(wildcard *.c)
 OBJS := $(SRCS:.c=.o)
 
 cJSON := includes/cJSON
-KHEADER:= ../tracing-tools/xdp-introspection/kperf_
+KHEADER:= kperf_/
 HELPERS_OBJ := $(KHEADER)/mykperf_helpers.o
 
 .PHONY: all clean
@@ -17,7 +17,7 @@ $(TARGET): $(OBJS)
 
 %.o: %.c
 	@echo "Compiling $<"
-	gcc -g -Wall -O2 -I$(KHEADER) -c -o $@ $<
+	gcc -g -Wno-unused-function -O2 -I$(KHEADER) -c -o $@ $<
 
 build-cjson:
 	@echo "Building cJSON"
