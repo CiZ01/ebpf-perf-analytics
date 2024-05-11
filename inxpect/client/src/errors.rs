@@ -6,31 +6,34 @@ pub struct InxpectServerErr {
     message: &'static str,
 }
 
-impl Error for InxpectServerErr {}
+impl Error for InxpectServerErr {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
+}
 
-// TODO: InxpectServerErr not implement Error
 impl fmt::Display for InxpectServerErr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{}", self.message)
     }
 }
 
 impl InxpectServerErr {
-    fn new(code: i32, message: &'static str) -> InxpectServerErr {
-        InxpectServerErr { code, message }
+    fn new(code: i32, message: &'static str) -> Self {
+        Self { code, message }
     }
     pub fn get_err(code: i32) -> InxpectServerErr {
         match code {
-            0 => NONE,
-            1 => UNKNOWN_CMD,
-            2 => INVALID,
-            3 => INTERNAL,
-            _ => UNKNOWN,
+            0 => InxpectServerErr::new(0, "None"),
+            1 => InxpectServerErr::new(1, "Unknown Command"),
+            2 => InxpectServerErr::new(2, "Invalid"),
+            3 => InxpectServerErr::new(3, "Internal"),
+            _ => InxpectServerErr::new(4, "Unknown"),
         }
     }
 }
 
-const UNKNOWN: InxpectServerErr = InxpectServerErr {
+/* const UNKNOWN: InxpectServerErr = InxpectServerErr {
     code: -1,
     message: "Unknown error",
 };
@@ -54,3 +57,4 @@ const INTERNAL: InxpectServerErr = InxpectServerErr {
     code: 3,
     message: "Internal Server Error",
 };
+ */

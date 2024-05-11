@@ -65,10 +65,10 @@ impl InxpectClient {
             Ok(()) => match self.receive_message() {
                 Ok(message) => match message.value {
                     0 => Ok(message.buffer),
-                    _ => Err(InxpectServerErr {
-                        code: 1,
-                        message: "ciao",
-                    }),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        InxpectServerErr::get_err(message.value).to_string(),
+                    )),
                 },
                 Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Error during receive")),
             },
@@ -175,7 +175,7 @@ impl Console {
         }
     }
     // MISSING ERROR CHECKING
-    fn pretty_print_get_psections(&mut self) -> io::Result<()> {
+    fn pretty_print_get_psections(&mut self) {
         match self.client.request_get_psections() {
             Ok(psections) => {
                 println!("Psections:");
@@ -183,24 +183,23 @@ impl Console {
                     println!("\t{}", psection);
                 }
             }
-            Err(_) => println(),
+            Err(e) => println!("{}", e),
         }
-
-        Ok(())
     }
 
-    fn pretty_print_psection_change_event(
-        &mut self,
-        psection_name: &str,
-        event_name: &str,
-    ) -> io::Result<()> {
-        _ = self
+    fn pretty_print_psection_change_event(&mut self, psection_name: &str, event_name: &str) {
+        match self
             .client
-            .request_psection_change_event(&psection_name, &event_name);
-        println!(
-            "Psection {} changed event to {}!",
-            psection_name, event_name
-        )
+            .request_psection_change_event(&psection_name, &event_name)
+        {
+            Ok(_) => {
+                println!(
+                    "Psection {} changed event to {}!",
+                    psection_name, event_name
+                );
+            }
+            Err(e) => println!("{}", e),
+        }
     }
 }
 
