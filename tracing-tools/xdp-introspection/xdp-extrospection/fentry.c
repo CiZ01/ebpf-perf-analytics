@@ -25,9 +25,8 @@
 #include <bpf/bpf.h>
 #include <bpf/btf.h>
 #include <bpf/libbpf.h>
-#include <bpf/skel_internal.h>
 
-#include "fentry_skel.h"
+#include "fentry.skel.h"
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]) + __must_be_array(arr))
 #define BPF_METADATA_PREFIX "bpf_metadata_"
@@ -37,11 +36,6 @@
 #define __same_type(a, b) __builtin_types_compatible_p(typeof(a), typeof(b))
 #endif
 #define BUILD_BUG_ON_ZERO(e) ((int)(sizeof(struct { int : (-!!(e)); })))
-
-struct my_value_perf
-{
-    __u64 value;
-};
 
 static inline __u64 ptr_to_u64(const void *ptr)
 {
@@ -54,75 +48,80 @@ struct profile_metric
     struct bpf_perf_event_value val;
     struct perf_event_attr attr;
     bool selected;
-    __u64 my_value;
 
     /* calculate ratios like instructions per cycle */
     const int ratio_metric; /* 0 for N/A, 1 for index 0 (cycles) */
     const char *ratio_desc;
     const float ratio_mul;
-} metrics[] = {
-    {
-        .name = "cycles",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_CPU_CYCLES,
-                .exclude_user = 1,
-            },
-    },
-    {
-        .name = "instructions",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_INSTRUCTIONS,
-                .exclude_user = 1,
-            },
-        .ratio_metric = 1,
-        .ratio_desc = "insns per cycle",
-        .ratio_mul = 1.0,
-    },
-    {
-        .name = "l1d_loads",
-        .attr =
-            {
-                .type = PERF_TYPE_HW_CACHE,
-                .config = PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                          (PERF_COUNT_HW_CACHE_RESULT_ACCESS << 16),
-                .exclude_user = 1,
-            },
-    },
-    {
-        .name = "llc_misses",
-        .attr = {.type = PERF_TYPE_HW_CACHE,
-                 .config = PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
-                 .exclude_user = 1},
-        .ratio_metric = 2,
-        .ratio_desc = "LLC misses per million insns",
-        .ratio_mul = 1e6,
-    },
-    {
-        .name = "itlb_misses",
-        .attr = {.type = PERF_TYPE_HW_CACHE,
-                 .config = PERF_COUNT_HW_CACHE_ITLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
-                 .exclude_user = 1},
-        .ratio_metric = 2,
-        .ratio_desc = "itlb misses per million insns",
-        .ratio_mul = 1e6,
-    },
-    {
-        .name = "dtlb_misses",
-        .attr = {.type = PERF_TYPE_HW_CACHE,
-                 .config = PERF_COUNT_HW_CACHE_DTLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
-                 .exclude_user = 1},
-        .ratio_metric = 2,
-        .ratio_desc = "dtlb misses per million insns",
-        .ratio_mul = 1e6,
-    },
-};
+} metrics[] = {{
+                   .name = "cycles",
+                   .attr =
+                       {
+                           .type = PERF_TYPE_HARDWARE,
+                           .config = PERF_COUNT_HW_CPU_CYCLES,
+                           .exclude_user = 1,
+                       },
+               },
+               {
+                   .name = "instructions",
+                   .attr =
+                       {
+                           .type = PERF_TYPE_HARDWARE,
+                           .config = PERF_COUNT_HW_INSTRUCTIONS,
+                           .exclude_user = 1,
+                       },
+                   .ratio_metric = 1,
+                   .ratio_desc = "insns per cycle",
+                   .ratio_mul = 1.0,
+               },
+               {
+                   .name = "l1d_loads",
+                   .attr =
+                       {
+                           .type = PERF_TYPE_HW_CACHE,
+                           .config = PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                     (PERF_COUNT_HW_CACHE_RESULT_ACCESS << 16),
+                           .exclude_user = 1,
+                       },
+               },
+               {
+                   .name = "llc_misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+                   .ratio_metric = 2,
+                   .ratio_desc = "LLC misses per million insns",
+                   .ratio_mul = 1e6,
+               },
+               {
+                   .name = "itlb_misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_ITLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+                   .ratio_metric = 2,
+                   .ratio_desc = "itlb misses per million insns",
+                   .ratio_mul = 1e6,
+               },
+               {
+                   .name = "dtlb_misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_DTLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+                   .ratio_metric = 2,
+                   .ratio_desc = "dtlb misses per million insns",
+                   .ratio_mul = 1e6,
+               },
+               {
+                   .name = "L1-dcache-load-misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+
+               }};
 
 static __u64 profile_total_count;
 
@@ -133,18 +132,15 @@ static __u64 profile_total_count;
 static void profile_read_values(struct fentry_bpf *obj)
 {
     __u32 m, cpu, num_cpu = obj->rodata->num_cpu;
-    int reading_map_fd, count_map_fd, my_reading_map_fd;
+    int reading_map_fd, count_map_fd;
     __u64 counts[num_cpu];
     __u32 key = 0;
     int err;
 
     reading_map_fd = bpf_map__fd(obj->maps.accum_readings);
 
-    // forse potrebbe dare errore perché supera i 15 caratteri
-    my_reading_map_fd = bpf_map__fd(obj->maps.my_accum_readings);
-
     count_map_fd = bpf_map__fd(obj->maps.counts);
-    if (reading_map_fd < 0 || count_map_fd < 0 || my_reading_map_fd < 0)
+    if (reading_map_fd < 0 || count_map_fd < 0)
     {
         fprintf(stderr, "failed to get fd for map");
         return;
@@ -164,7 +160,6 @@ static void profile_read_values(struct fentry_bpf *obj)
     for (m = 0; m < ARRAY_SIZE(metrics); m++)
     {
         struct bpf_perf_event_value values[num_cpu];
-        struct my_value_perf my_values[num_cpu];
 
         if (!metrics[m].selected)
             continue;
@@ -175,21 +170,11 @@ static void profile_read_values(struct fentry_bpf *obj)
             fprintf(stderr, "failed to read reading_map: %s", strerror(errno));
             return;
         }
-
-        err = bpf_map_lookup_elem(my_reading_map_fd, &key, my_values);
-        if (err)
-        {
-            fprintf(stderr, "failed to read my_reading_map: %s", strerror(errno));
-            return;
-        }
-
         for (cpu = 0; cpu < num_cpu; cpu++)
         {
             metrics[m].val.counter += values[cpu].counter;
             metrics[m].val.enabled += values[cpu].enabled;
             metrics[m].val.running += values[cpu].running;
-            // my code
-            metrics[m].my_value += my_values[cpu].value;
         }
         key++;
     }
@@ -207,10 +192,6 @@ static void profile_print_readings_plain(void)
 
         if (!metrics[m].selected)
             continue;
-
-        // questa è quella che mi interessa
-        printf("%18llu %-20s", val->counter, metrics[m].name);
-        printf("%18llu %-20s", metrics[m].my_value, "my_value");
 
         r = metrics[m].ratio_metric - 1;
         if (r >= 0 && metrics[r].selected && metrics[r].val.counter > 0)
@@ -480,10 +461,6 @@ int main(int argc, char **argv)
     bpf_map__set_max_entries(profile_obj->maps.fentry_readings, num_metric);
     bpf_map__set_max_entries(profile_obj->maps.accum_readings, num_metric);
     bpf_map__set_max_entries(profile_obj->maps.counts, 1);
-
-    // my code, my maps
-    bpf_map__set_max_entries(profile_obj->maps.my_value_fentry_readings, num_metric);
-    bpf_map__set_max_entries(profile_obj->maps.my_accum_readings, num_metric);
 
     /* change target name */
     profile_tgt_name = profile_target_name(profile_tgt_fd);

@@ -6,13 +6,10 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-// my kernel function prototype
-__u64 bpf_mykperf_read_rdpmc(__u8 counter__k) __ksym;
+#include "mykperf_module.h"
 
-struct my_value_perf
-{
-    __u64 value;
-};
+BPF_MYKPERF_INIT_TRACE();
+DEFINE_SECTIONS("fentry", "update");
 
 /* readings at fentry */
 struct
@@ -31,15 +28,6 @@ struct
     __uint(value_size, sizeof(int));
 } events SEC(".maps");
 
-/* readings at fentry my value */
-struct
-{
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(key_size, sizeof(__u32));
-    __uint(value_size, sizeof(struct my_value_perf));
-    __uint(max_entries, 1);
-} my_value_fentry_readings SEC(".maps");
-
 /* accumulated readings */
 struct
 {
@@ -48,14 +36,6 @@ struct
     __uint(value_size, sizeof(struct bpf_perf_event_value));
     __uint(max_entries, 1);
 } accum_readings SEC(".maps");
-
-struct
-{
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
-    __uint(key_size, sizeof(__u32));
-    __uint(value_size, sizeof(struct my_value_perf));
-    __uint(max_entries, 1);
-} my_accum_readings SEC(".maps");
 
 /* sample counts, one per cpu --- from bpftool */
 struct
@@ -71,19 +51,11 @@ const volatile __u32 num_metric = 1;
 SEC("fentry/*")
 int BPF_PROG(fentry_XXX)
 {
+    BPF_MYKPERF_START_TRACE_ARRAY(fentry);
     __u32 key = bpf_get_smp_processor_id();
     struct bpf_perf_event_value *ptr;
     __u32 zero = 0;
     long err;
-
-    // my code
-    struct my_value_perf *ptr_my_value;
-    // faccio la stessa cosa
-    // in pratica recupero il puntatore alla struttura dalla mappa, così
-    // non la devo ricaricaricare quando modifico il valore
-    ptr_my_value = bpf_map_lookup_elem(&my_value_fentry_readings, &zero);
-    if (!ptr_my_value)
-        return 0;
 
     /* look up before reading, to reduce error */
     ptr = bpf_map_lookup_elem(&fentry_readings, &zero);
@@ -93,23 +65,14 @@ int BPF_PROG(fentry_XXX)
     err = bpf_perf_event_read_value(&events, key, ptr, sizeof(*ptr));
     if (err)
         return 0;
-
-    // my code
-    ptr_my_value->value = bpf_mykperf_read_rdpmc(0);
-
-    /*     bpf_printk("fentry_XXX: %lld\n", ptr->counter);
-        bpf_printk("my: %lld\n", ptr_my_value->value);
-     */
+    BPF_MYKPERF_END_TRACE_ARRAY(fentry);
     return 0;
 }
 
-static inline void fexit_update_maps(struct bpf_perf_event_value *after, struct my_value_perf *my_after)
+static inline void fexit_update_maps(struct bpf_perf_event_value *after)
 {
     struct bpf_perf_event_value *before, diff;
     __u32 zero = 0;
-
-    // my code
-    struct my_value_perf *my_before, my_diff;
 
     before = bpf_map_lookup_elem(&fentry_readings, &zero);
     /* only account samples with a valid fentry_reading */
@@ -121,8 +84,6 @@ static inline void fexit_update_maps(struct bpf_perf_event_value *after, struct 
         diff.enabled = after->enabled - before->enabled;
         diff.running = after->running - before->running;
 
-        bpf_printk("diff.counter: %lld\n", diff.counter);
-
         accum = bpf_map_lookup_elem(&accum_readings, &zero);
         if (accum)
         {
@@ -131,34 +92,11 @@ static inline void fexit_update_maps(struct bpf_perf_event_value *after, struct 
             accum->running += diff.running;
         }
     }
-
-    // my code
-    my_before = bpf_map_lookup_elem(&my_value_fentry_readings, &zero);
-    if (my_before)
-    {
-        struct my_value_perf *my_accum;
-
-        my_diff.value = my_after->value - my_before->value;
-
-        bpf_printk("my_diff.value: %lld\n", my_diff.value);
-
-        my_accum = bpf_map_lookup_elem(&my_accum_readings, &zero);
-        if (my_accum)
-        {
-            my_accum->value += my_diff.value;
-        }
-    }
-    // se salva il puntatore nella mappa non c'è bisogno di aggiornala
-    // penso, non so se è vero
 }
 
 SEC("fexit/XXX")
 int BPF_PROG(fexit_XXX)
 {
-
-    // my code | va bene un puntatore perché poi carico dentro la mappa per value,
-    // vedere update_maps
-    struct my_value_perf my_reading;
 
     struct bpf_perf_event_value reading;
     __u32 cpu = bpf_get_smp_processor_id();
@@ -167,29 +105,21 @@ int BPF_PROG(fexit_XXX)
     // from bpftool
     __u64 *count;
 
-    // my code
-    /* read all events before updating the maps, to reduce error */
-
-    //__u64 start, end;
-    // start = bpf_mykperf_read_rdpmc(0);
-    my_reading.value = bpf_mykperf_read_rdpmc(0);
-    // end = bpf_mykperf_read_rdpmc(0);
-
     err = bpf_perf_event_read_value(&events, cpu, &reading, sizeof(reading));
     if (err)
         return 0;
 
-    bpf_printk("my: %lld\n", my_reading.value);
-    bpf_printk("fexit_XXX: %lld\n", reading.counter);
     // bpf_printk("costo 2 read event: %lld\n", end - start);
 
     // from bpftool
+    BPF_MYKPERF_START_TRACE_ARRAY(update);
     count = bpf_map_lookup_elem(&counts, &zero);
     if (count)
     {
         *count += 1;
-        fexit_update_maps(&reading, &my_reading);
+        fexit_update_maps(&reading);
     }
+    BPF_MYKPERF_END_TRACE_ARRAY(update);
 
     return 0;
 }

@@ -121,7 +121,7 @@ int inxpect_server__init_server(int port)
         return -1;
     }
 
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)))
     {
         perror("setsockopt");
         return -1;
@@ -276,7 +276,7 @@ int inxpect_response__sample_rate_set(int sock, struct inxpect_server__message_t
         return -1;
     }
     int err;
-    err = sample_rate__set(msg->value);
+    err = sample_rate__set(prog_fd, msg->value);
     if (err)
     {
         msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;

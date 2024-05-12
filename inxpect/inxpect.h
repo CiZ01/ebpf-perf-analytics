@@ -13,7 +13,7 @@
 // #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 //  this is needed because of the way the metrics are defined
 // ARRAY SIZE not work with extern
-#define METRICS_NR 4
+#define METRICS_NR 5 
 
 #define MAX_METRICS 8
 #define MAX_PSECTIONS 8
@@ -34,6 +34,7 @@ struct event
 };
 
 extern struct event metrics[];
+extern int prog_fd; // just for inxpect server
 
 struct psection_t
 {
@@ -246,11 +247,11 @@ static void psection__get_all(char *json)
 }
 
 // ----------- SAMPLE RATE -----------------
-static int sample_rate__set(int sample_rate)
+static int sample_rate__set(int prog_fd, int sample_rate)
 {
     int fd = -1;
     int zero = 0;
-    fd = get_bss_map_fd();
+    fd = get_bss_map_fd(prog_fd);
     if (fd < 0)
     {
         fprintf(stderr, "[%s]: during finding data map\n", ERR);

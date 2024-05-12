@@ -60,69 +60,74 @@ struct profile_metric
     const int ratio_metric; /* 0 for N/A, 1 for index 0 (cycles) */
     const char *ratio_desc;
     const float ratio_mul;
-} metrics[] = {
-    {
-        .name = "cycles",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_CPU_CYCLES,
-                .exclude_user = 1,
-            },
-    },
-    {
-        .name = "instructions",
-        .attr =
-            {
-                .type = PERF_TYPE_HARDWARE,
-                .config = PERF_COUNT_HW_INSTRUCTIONS,
-                .exclude_user = 1,
-            },
-        .ratio_metric = 1,
-        .ratio_desc = "insns per cycle",
-        .ratio_mul = 1.0,
-    },
-    {
-        .name = "l1d_loads",
-        .attr =
-            {
-                .type = PERF_TYPE_HW_CACHE,
-                .config = PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                          (PERF_COUNT_HW_CACHE_RESULT_ACCESS << 16),
-                .exclude_user = 1,
-            },
-    },
-    {
-        .name = "llc_misses",
-        .attr = {.type = PERF_TYPE_HW_CACHE,
-                 .config = PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
-                 .exclude_user = 1},
-        .ratio_metric = 2,
-        .ratio_desc = "LLC misses per million insns",
-        .ratio_mul = 1e6,
-    },
-    {
-        .name = "itlb_misses",
-        .attr = {.type = PERF_TYPE_HW_CACHE,
-                 .config = PERF_COUNT_HW_CACHE_ITLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
-                 .exclude_user = 1},
-        .ratio_metric = 2,
-        .ratio_desc = "itlb misses per million insns",
-        .ratio_mul = 1e6,
-    },
-    {
-        .name = "dtlb_misses",
-        .attr = {.type = PERF_TYPE_HW_CACHE,
-                 .config = PERF_COUNT_HW_CACHE_DTLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
-                           (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
-                 .exclude_user = 1},
-        .ratio_metric = 2,
-        .ratio_desc = "dtlb misses per million insns",
-        .ratio_mul = 1e6,
-    },
-};
+} metrics[] = {{
+                   .name = "cycles",
+                   .attr =
+                       {
+                           .type = PERF_TYPE_HARDWARE,
+                           .config = PERF_COUNT_HW_CPU_CYCLES,
+                           .exclude_user = 1,
+                       },
+               },
+               {
+                   .name = "instructions",
+                   .attr =
+                       {
+                           .type = PERF_TYPE_HARDWARE,
+                           .config = PERF_COUNT_HW_INSTRUCTIONS,
+                           .exclude_user = 1,
+                       },
+                   .ratio_metric = 1,
+                   .ratio_desc = "insns per cycle",
+                   .ratio_mul = 1.0,
+               },
+               {
+                   .name = "l1d_loads",
+                   .attr =
+                       {
+                           .type = PERF_TYPE_HW_CACHE,
+                           .config = PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                     (PERF_COUNT_HW_CACHE_RESULT_ACCESS << 16),
+                           .exclude_user = 1,
+                       },
+               },
+               {
+                   .name = "llc_misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_LL | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+                   .ratio_metric = 2,
+                   .ratio_desc = "LLC misses per million insns",
+                   .ratio_mul = 1e6,
+               },
+               {
+                   .name = "itlb_misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_ITLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+                   .ratio_metric = 2,
+                   .ratio_desc = "itlb misses per million insns",
+                   .ratio_mul = 1e6,
+               },
+               {
+                   .name = "dtlb_misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_DTLB | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+                   .ratio_metric = 2,
+                   .ratio_desc = "dtlb misses per million insns",
+                   .ratio_mul = 1e6,
+               },
+               {
+                   .name = "L1-dcache-load-misses",
+                   .attr = {.type = PERF_TYPE_HW_CACHE,
+                            .config = PERF_COUNT_HW_CACHE_L1D | (PERF_COUNT_HW_CACHE_OP_READ << 8) |
+                                      (PERF_COUNT_HW_CACHE_RESULT_MISS << 16),
+                            .exclude_user = 1},
+               }};
 
 static __u64 profile_total_count;
 

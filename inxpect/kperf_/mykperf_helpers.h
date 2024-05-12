@@ -28,8 +28,8 @@ struct rodata
     char sections[MAX_PSECTIONS][MAX_PROG_FULL_NAME];
 };
 
-int get_bss_map_fd();
-int get_rodata_map_fd();
+int get_bss_map_fd(int prog_fd);
+int get_rodata_map_fd(int prog_fd);
 int enable_event(__u64 event, int *out_reg, int cpu);
 int disable_event(__u64 event, __u64 reg, int cpu);
 

@@ -12,84 +12,130 @@
 #include "mykperf_ioctl.h"
 #include "mykperf_helpers.h"
 
+static inline __u64 ptr_to_u64(const void *ptr)
+{
+    return (__u64)(unsigned long)ptr;
+}
+
 /*
  * Find the bss map in the bpf map list and return the file descriptor.
  * @return the file descriptor of the bss map, error otherwise
  */
-int get_bss_map_fd()
-{
-    int fd = 0;
-    unsigned int id = 0;
-    int err;
-
-    struct bpf_map_info info = {};
-    __u32 len = sizeof(info);
-    while (1)
-    {
-        err = bpf_map_get_next_id(id, &id);
-        if (err)
-        {
-            return err;
-        }
-
-        fd = bpf_map_get_fd_by_id(id);
-        if (fd < 0)
-        {
-            return err;
-        }
-
-        err = bpf_map_get_info_by_fd(fd, &info, &len);
-        if (err)
-        {
-            return err;
-        }
-
-        if (strcmp(BSS_MAP, info.name + strlen(info.name) - strlen(BSS_MAP)) == 0)
-        {
-            break;
-        }
-        close(fd);
-    }
-    fprintf(stdout, "Map name: %s\n", info.name);
-    return fd;
-}
-
-int get_rodata_map_fd()
+int get_bss_map_fd(int prog_fd)
 {
     unsigned int id = 0;
-    int err;
 
     int fd = -1;
 
-    struct bpf_map_info info = {};
+    struct bpf_prog_info info = {0};
     __u32 len = sizeof(info);
-    while (1)
-    {
-        err = bpf_map_get_next_id(id, &id);
-        if (err)
-        {
-            return err;
-        }
 
-        fd = bpf_map_get_fd_by_id(id);
+    int err = -1;
+    // needed to know the number of maps
+    if (bpf_prog_get_info_by_fd(prog_fd, &info, &len))
+    {
+        return err;
+    }
+
+    // TODO : IMPROVE THIS
+
+    int num_maps = info.nr_map_ids;
+    __u32 map_ids[num_maps];
+
+    struct bpf_prog_info info2 = {0};
+    __u32 len2 = sizeof(info2);
+
+    info2.nr_map_ids = num_maps;
+    info2.map_ids = ptr_to_u64(map_ids);
+
+    if (bpf_prog_get_info_by_fd(prog_fd, &info2, &len2))
+    {
+        return err;
+    }
+
+    struct bpf_map_info info_map = {};
+    len = sizeof(info_map);
+
+    for (unsigned int i = 0; i < num_maps; i++)
+    {
+        fd = bpf_map_get_fd_by_id(map_ids[i]);
         if (fd < 0)
         {
             return err;
         }
 
-        err = bpf_map_get_info_by_fd(fd, &info, &len);
+        err = bpf_map_get_info_by_fd(fd, &info_map, &len);
         if (err)
         {
             return err;
         }
 
-        if (strcmp(RODATA_MAP, info.name + strlen(info.name) - strlen(RODATA_MAP)) == 0)
+        if (strcmp(BSS_MAP, info_map.name + strlen(info_map.name) - strlen(BSS_MAP)) == 0)
         {
             break;
         }
         close(fd);
     }
-    fprintf(stdout, "Map name: %s\n", info.name);
+    fprintf(stdout, "Map name: %s\n", info_map.name);
+    return fd;
+}
+
+int get_rodata_map_fd(int prog_fd)
+{
+    unsigned int id = 0;
+
+    int fd = -1;
+
+    struct bpf_prog_info info = {0};
+    __u32 len = sizeof(info);
+
+    int err = -1;
+    // needed to know the number of maps
+    if (bpf_prog_get_info_by_fd(prog_fd, &info, &len))
+    {
+        return err;
+    }
+
+    // TODO : IMPROVE THIS
+
+    int num_maps = info.nr_map_ids;
+    __u32 map_ids[num_maps];
+
+    struct bpf_prog_info info2 = {0};
+    __u32 len2 = sizeof(info2);
+
+    info2.nr_map_ids = num_maps;
+    info2.map_ids = ptr_to_u64(map_ids);
+
+    if (bpf_prog_get_info_by_fd(prog_fd, &info2, &len2))
+    {
+        return err;
+    }
+
+    struct bpf_map_info info_map = {};
+    len = sizeof(info_map);
+
+    for (unsigned int i = 0; i < num_maps; i++)
+    {
+        fd = bpf_map_get_fd_by_id(map_ids[i]);
+        if (fd < 0)
+        {
+            return err;
+        }
+
+        err = bpf_map_get_info_by_fd(fd, &info_map, &len);
+        if (err)
+        {
+            return err;
+        }
+
+        if (strcmp(RODATA_MAP, info_map.name + strlen(info_map.name) - strlen(RODATA_MAP)) == 0)
+        {
+            break;
+        }
+        close(fd);
+    }
+    fprintf(stdout, "Map name: %s\n", info_map.name);
     return fd;
 }
 

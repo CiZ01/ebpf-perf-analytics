@@ -6,6 +6,7 @@
 #include <getopt.h>
 #include <unistd.h>
 #include <time.h>
+#include <pthread.h>
 
 // if_nametoindex
 #include <net/if.h>
@@ -20,15 +21,15 @@
 #include "inxpect-server.h"
 #include "mykperf_helpers.h"
 
-struct event metrics[4] = {
-    {.name = "instructions", .code = 0x00c0},
-    {.name = "cycles", .code = 0x003c},
-    {.name = "cache-misses", .code = 0x2e41},
-    {.name = "llc-misses", .code = 0x01b7},
+struct event metrics[METRICS_NR] = {
+    {.name = "instructions", .code = 0x00c0},          {.name = "cycles", .code = 0x003c},
+    {.name = "cache-misses", .code = 0x2e41},          {.name = "llc-misses", .code = 0x01b7},
+    {.name = "L1-dcache-load-misses", .code = 0x0151},
 };
 
 // --- GLOBALS ---
 char prog_name[MAX_PROG_FULL_NAME];
+int prog_fd = -1;
 struct psection_t psections[MAX_PSECTIONS];
 int do_run_count = 0;
 int timeout_s = 3;
@@ -97,31 +98,46 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
 {
     int fd = -1;
     int zero = 0;
-    fd = get_rodata_map_fd();
+    fd = get_rodata_map_fd(prog_fd);
     if (fd < 0)
     {
         fprintf(stderr, "[%s]: during finding data map\n", ERR);
         return -1;
     }
 
-    struct rodata bss_data = {0};
+    struct bpf_map_info info = {0};
+    int info_len = sizeof(info);
 
-    int err = bpf_map_lookup_elem(fd, &zero, &bss_data);
+    int err = bpf_map_get_info_by_fd(fd, &info, &info_len);
     if (err)
     {
-        fprintf(stderr, "[%s]: during profiler section name retrieve\n", ERR);
+        fprintf(stderr, "[%s]: during getting map rodata info: %s\n", ERR, strerror(errno));
         return -1;
     }
 
+    // TODO: check this part, could be dangerous
+    unsigned char *buffer = calloc(info.value_size, sizeof(unsigned char));
+    err = bpf_map_lookup_elem(fd, &zero, buffer);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during profiler section name retrieve\n", ERR);
+        free(buffer);
+        return -1;
+    }
+
+    // parse the part of the buffer that contains the sections
+    struct rodata *rodata = (struct rodata *)buffer;
+
     for (int i = 0; i < MAX_PSECTIONS; i++)
     {
-        if (bss_data.sections[i][0] == 0)
+        if (rodata->sections[i][0] == 0)
         {
             break;
         }
-        strncpy(psections_name_list[i], bss_data.sections[i], sizeof(bss_data.sections[i]));
+        strncpy(psections_name_list[i], rodata->sections[i], sizeof(rodata->sections[i]));
     }
 
+    free(buffer);
     close(fd);
     return 0;
 }
@@ -130,7 +146,7 @@ static int run_count__get()
 {
     int fd = -1;
     int zero = 0;
-    fd = get_bss_map_fd();
+    fd = get_bss_map_fd(prog_fd);
     if (fd < 0)
     {
         fprintf(stderr, "[%s]: during finding data map\n", ERR);
@@ -154,7 +170,7 @@ static int run_count__reset()
 {
     int fd = -1;
     int zero = 0;
-    fd = get_bss_map_fd();
+    fd = get_bss_map_fd(prog_fd);
     if (fd < 0)
     {
         fprintf(stderr, "[%s]: during finding data map\n", ERR);
@@ -434,7 +450,7 @@ int main(int argc, char **argv)
     // ------------------------------------------------
 
     // retrieve `prog_name` file descriptor by name
-    int prog_fd = prog_fd_by_nametag(prog_name);
+    prog_fd = prog_fd_by_nametag(prog_name);
     if (prog_fd < 0)
     {
         fprintf(stderr, "[%s]: can't get prog fd by name: %s\n", ERR, strerror(errno));
@@ -498,7 +514,7 @@ int main(int argc, char **argv)
 
     if (sample_rate)
     {
-        err = sample_rate__set(sample_rate);
+        err = sample_rate__set(prog_fd, sample_rate);
         if (err)
             exit_cleanup(0);
     }
