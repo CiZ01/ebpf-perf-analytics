@@ -83,13 +83,12 @@ int get_bss_map_fd(int prog_fd)
 int get_rodata_map_fd(int prog_fd)
 {
     unsigned int id = 0;
+    int err = -1;
 
     int fd = -1;
 
     struct bpf_prog_info info = {0};
     __u32 len = sizeof(info);
-
-    int err = -1;
     // needed to know the number of maps
     if (bpf_prog_get_info_by_fd(prog_fd, &info, &len))
     {
@@ -102,12 +101,12 @@ int get_rodata_map_fd(int prog_fd)
     __u32 map_ids[num_maps];
 
     struct bpf_prog_info info2 = {0};
-    __u32 len2 = sizeof(info2);
+    len = sizeof(info2);
 
-    info2.nr_map_ids = num_maps;
+    info2.nr_map_ids = num_maps; // needed otherwise map_ids is not filled
     info2.map_ids = ptr_to_u64(map_ids);
-
-    if (bpf_prog_get_info_by_fd(prog_fd, &info2, &len2))
+    // retrieve the map ids
+    if (bpf_prog_get_info_by_fd(prog_fd, &info2, &len))
     {
         return err;
     }

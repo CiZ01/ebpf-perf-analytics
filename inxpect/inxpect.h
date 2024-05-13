@@ -13,14 +13,14 @@
 // #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 //  this is needed because of the way the metrics are defined
 // ARRAY SIZE not work with extern
-#define METRICS_NR 5 
+#define METRICS_NR 5
 
 #define MAX_METRICS 8
 #define MAX_PSECTIONS 8
 #define PINNED_PATH "/sys/fs/bpf/"
 #define RECORD_MAP_NAME "percpu_output"
 
-#define MAX_PROG_FULL_NAME 15
+#define MAX_PROG_FULL_NAME 16
 
 extern int percpu_output_fd;
 

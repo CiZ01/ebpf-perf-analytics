@@ -9,7 +9,7 @@
 #include "mykperf_module.h"
 
 BPF_MYKPERF_INIT_TRACE();
-DEFINE_SECTIONS("fentry", "update");
+DEFINE_SECTIONS("fentry", "fexit");
 
 /* readings at fentry */
 struct
@@ -97,6 +97,7 @@ static inline void fexit_update_maps(struct bpf_perf_event_value *after)
 SEC("fexit/XXX")
 int BPF_PROG(fexit_XXX)
 {
+    BPF_MYKPERF_START_TRACE_ARRAY(fexit);
 
     struct bpf_perf_event_value reading;
     __u32 cpu = bpf_get_smp_processor_id();
@@ -112,15 +113,13 @@ int BPF_PROG(fexit_XXX)
     // bpf_printk("costo 2 read event: %lld\n", end - start);
 
     // from bpftool
-    BPF_MYKPERF_START_TRACE_ARRAY(update);
     count = bpf_map_lookup_elem(&counts, &zero);
     if (count)
     {
         *count += 1;
         fexit_update_maps(&reading);
     }
-    BPF_MYKPERF_END_TRACE_ARRAY(update);
-
+    BPF_MYKPERF_END_TRACE_ARRAY(fexit);
     return 0;
 }
 
