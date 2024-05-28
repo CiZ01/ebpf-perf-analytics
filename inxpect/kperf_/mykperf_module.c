@@ -38,15 +38,23 @@ static __u64 mykperf_read_rdpmc(__u8 counter, __u32 low, __u32 high)
     return ((__u64)high << 32) | low;
 }
 
+__bpf_kfunc void bpf_mykperf__fence(void)
+{
+    asm volatile("lfence" : : : "memory");
+}
+
 __bpf_kfunc __u64 bpf_mykperf__rdpmc(__u8 counter)
 {
     __u64 ret = 0;
+    asm volatile("lfence" : : : "memory");
     rdpmcl(counter, ret);
+    asm volatile("lfence" : : : "memory");
     return ret;
 }
 
 BTF_SET8_START(bpf_task_set)
 BTF_ID_FLAGS(func, bpf_mykperf__rdpmc)
+BTF_ID_FLAGS(func, bpf_mykperf__fence)
 BTF_SET8_END(bpf_task_set)
 
 static const struct btf_kfunc_id_set bpf_task_kfunc_set = {

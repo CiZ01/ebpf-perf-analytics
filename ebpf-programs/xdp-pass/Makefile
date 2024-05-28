@@ -1,7 +1,7 @@
 TARGET := xdp_pass_kern
 TARGET_USER := xdp_pass_user
 TARGET_TEST := xdp_pass_test
-KHEADER:= ../../tracing-tools/xdp-introspection/kperf_
+KHEADER:= ../../inxpect/kperf_
 
 
 .SILENT: all

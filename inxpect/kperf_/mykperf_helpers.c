@@ -23,8 +23,7 @@ static inline __u64 ptr_to_u64(const void *ptr)
  */
 int get_bss_map_fd(int prog_fd)
 {
-    unsigned int id = 0;
-
+    
     int fd = -1;
 
     struct bpf_prog_info info = {0};
