@@ -15,14 +15,15 @@
 // ARRAY SIZE not work with extern
 #define METRICS_NR 5
 
-#define MAX_METRICS 8
+#define MAX_METRICS 4
 #define MAX_PSECTIONS 8
 #define PINNED_PATH "/sys/fs/bpf/"
-#define RECORD_MAP_NAME "percpu_output"
+#define PERCPU_OUTPUT "percpu_output"
+#define MULTIPLEXED_OUTPUT "multiplexed_out" // the original name is too long | multiplexed_output
 
 #define MAX_PROG_FULL_NAME 16
 
-extern int percpu_output_fd;
+extern int map_output_fd;
 
 struct event
 {
@@ -38,8 +39,8 @@ extern int prog_fd; // just for inxpect server
 
 struct psection_t
 {
-    struct record_array *record;
-    struct event *metric;
+    struct record *record;
+    struct event *metrics[MAX_METRICS];
 };
 
 // ---- EVENT ----------
@@ -125,14 +126,14 @@ static struct psection_t *psection__get_by_name(const char *name)
     return NULL;
 }
 
-static int __update_record_on_map(int map_fd, struct record_array *record, int cpu)
+static int __update_record_on_map(int map_fd, struct record *record, int cpu)
 {
     int key = psection__get_index_by_name(record->name);
     if (key < 0)
         return -1;
 
     int err = 0;
-    struct record_array *percpu_data = calloc(libbpf_num_possible_cpus(), sizeof(struct record_array));
+    struct record *percpu_data = calloc(libbpf_num_possible_cpus(), sizeof(struct record));
     err = bpf_map_lookup_elem(map_fd, &key, percpu_data);
     if (err)
     {
@@ -150,7 +151,7 @@ static int __update_record_on_map(int map_fd, struct record_array *record, int c
     return 0;
 }
 
-static int psection__change_event(struct psection_t *psection, const char *event_name)
+static int psection__change_event(struct psection_t *psection, const char *event_name, const int i_counter)
 {
     struct event *event = event__get_by_name(event_name);
     if (!event)
@@ -159,60 +160,59 @@ static int psection__change_event(struct psection_t *psection, const char *event
     }
     if (!event->enabled)
     {
-        int err = event__enable(event, psection->metric->cpu);
+        int err = event__enable(event, psection->metrics[i_counter]->cpu);
         if (err)
         {
             return -1;
         }
     }
 
-    struct record_array tmp_record = *psection->record;
+    struct record tmp_record = *psection->record;
 
     // update values
-    tmp_record.counter = event->reg_h;
-    tmp_record.value = 0;
-    tmp_record.run_cnt = 0;
+    tmp_record.counters[i_counter] = event->reg_h;
+    memset(tmp_record.run_cnts, 0, sizeof(tmp_record.run_cnts));
+    memset(tmp_record.values, 0, sizeof(tmp_record.values));
 
-    if (__update_record_on_map(percpu_output_fd, &tmp_record, psection->metric->cpu))
+    if (__update_record_on_map(map_output_fd, &tmp_record, psection->metrics[i_counter]->cpu))
     {
         return -1;
     }
 
     // if all goes well, I update in userspace
-    psection->metric = event;
+    psection->metrics[i_counter] = event;
 
     fprintf(stdout, "[%s]:  %s: %x\n", DEBUG, event->name, event->reg_h);
-    memcpy(psection->record, &tmp_record, sizeof(struct record_array));
+    memcpy(psection->record, &tmp_record, sizeof(struct record));
     return 0;
 }
 
-static int psection__event_disable(struct psection_t *psection)
+static int psection__event_disable(struct psection_t *psection, const int i_counter)
 {
-    if (!psection->metric)
+    if (!psection->metrics[i_counter])
     {
         return 0;
     }
 
-    if (psection->metric->enabled == 1)
+    if (psection->metrics[i_counter]->enabled == 1)
     {
-        int err = event__disable(psection->metric, psection->metric->cpu);
+        int err = event__disable(psection->metrics[i_counter], psection->metrics[i_counter]->cpu);
         if (err)
         {
             return -1;
         }
-        psection->metric = NULL;
+        psection->metrics[i_counter] = NULL;
     }
-    psection->metric->enabled--;
-    psection->metric = NULL;
-    psection->metric = NULL;
+    psection->metrics[i_counter]->enabled--;
+    psection->metrics[i_counter] = NULL;
     return 0;
 }
 
-static int psection__set_event(struct psection_t *psection, struct event *event)
+static int psection__set_event(struct psection_t *psection, struct event *event, const int i_counter)
 {
-    if (psection->metric)
+    if (psection->metrics[i_counter])
     {
-        psection__event_disable(psection);
+        psection__event_disable(psection, i_counter);
     }
 
     if (!event->enabled)
@@ -227,7 +227,7 @@ static int psection__set_event(struct psection_t *psection, struct event *event)
     {
         event->enabled++; // count how much psections are using this event
     }
-    psection->metric = event;
+    psection->metrics[i_counter] = event;
     return 0;
 }
 
@@ -283,13 +283,46 @@ static int sample_rate__set(int prog_fd, int sample_rate)
 // -------------------------------------------------
 
 // ------------------- DATA -----------------------
-static int percput_output__clean_and_init(int map_fd, int cpu)
+static int run_count__reset(int prog_fd)
+{
+    int fd = -1;
+    int zero = 0;
+    fd = get_bss_map_fd(prog_fd);
+    if (fd < 0)
+    {
+        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        return -1;
+    }
+
+    struct bss bss_data = {0};
+
+    int err = bpf_map_lookup_elem(fd, &zero, &bss_data);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during getting run count\n", ERR);
+        return -1;
+    }
+
+    bss_data.run_cnt = 0;
+
+    err = bpf_map_update_elem(fd, &zero, &bss_data, BPF_ANY);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during setting run count\n", ERR);
+        return -1;
+    }
+
+    close(fd);
+    return 0;
+}
+
+static int percput_output__clean_and_init(int map_output_fd, int running_cpu)
 {
     int err;
     /*    unsigned int count = MAX_PSECTIONS;
        int *keys = malloc(MAX_PSECTIONS * sizeof(int));
        // clean the map
-       int err = bpf_map_delete_batch(percpu_output_fd, keys, &count, NULL);
+       int err = bpf_map_delete_batch(map_output_fd, keys, &count, NULL);
        if (err)
        {
            fprintf(stderr, "[%s]: during cleaning map: %s\n", ERR, strerror(errno));
@@ -302,7 +335,7 @@ static int percput_output__clean_and_init(int map_fd, int cpu)
 
     // init the map
     int nr_cpus = libbpf_num_possible_cpus();
-    struct record_array *percpu_values = calloc(nr_cpus, sizeof(struct record_array));
+    struct record *percpu_values = calloc(nr_cpus, sizeof(struct record));
 
     for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
     {
@@ -311,9 +344,13 @@ static int percput_output__clean_and_init(int map_fd, int cpu)
             break;
         }
 
-        percpu_values[cpu] = *psections[i_sec].record;
+        memcpy(percpu_values[running_cpu].counters, psections[i_sec].record->counters,
+               sizeof(psections[i_sec].record->counters));
+        memcpy(percpu_values[running_cpu].name, psections[i_sec].record->name, 16);
+        memset(percpu_values[running_cpu].run_cnts, 0, sizeof(percpu_values[running_cpu].run_cnts));
+        memset(percpu_values[running_cpu].values, 0, sizeof(percpu_values[running_cpu].values));
 
-        err = bpf_map_update_elem(map_fd, &i_sec, percpu_values, BPF_ANY);
+        err = bpf_map_update_elem(map_output_fd, &i_sec, percpu_values, BPF_ANY);
         if (err)
         {
             fprintf(stderr, "[%s]: during updating map\n", ERR);
@@ -321,12 +358,13 @@ static int percput_output__clean_and_init(int map_fd, int cpu)
             return -1;
         }
     }
+
     free(percpu_values);
 
     return 0;
 }
 
-static struct record_array *stats__get_by_psection_name(char *name)
+static struct record *stats__get_by_psection_name(char *name)
 {
     struct psection_t *psection = psection__get_by_name(name);
     if (!psection)

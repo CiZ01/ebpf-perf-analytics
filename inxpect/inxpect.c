@@ -33,21 +33,31 @@ int prog_fd = -1;
 struct psection_t psections[MAX_PSECTIONS];
 int do_run_count = 0;
 int timeout_s = 3;
+int duration = 0;
+int map_output_fd = -1;
+
+// threads
+pthread_t thread_printer = {0};              // poll_print_stats
+pthread_t threads_poll_stats[MAX_PSECTIONS]; // poll_stats
+int duration;
 
 // percpu map
-int percpu_output_fd = -1;
 struct record_array *percpu_data;
 int do_accumulate = 0;
 
+// multiplexed map
+struct record *multiplexed_data;
+int multiplexed_mode = 0;
+
 // events
 char *arg__event = NULL;
+char *selected_events[MAX_METRICS];
 int nr_selected_events = 0;
 int running_cpu = 0;
 int sample_rate = 0;
 
 // server
 int interactive_mode = 0;
-pid_t server_process = -1;
 
 // from bpftool
 static int prog_fd_by_nametag(char nametag[MAX_PROG_FULL_NAME])
@@ -166,43 +176,10 @@ static int run_count__get()
     return bss_data.run_cnt;
 }
 
-static int run_count__reset()
-{
-    int fd = -1;
-    int zero = 0;
-    fd = get_bss_map_fd(prog_fd);
-    if (fd < 0)
-    {
-        fprintf(stderr, "[%s]: during finding data map\n", ERR);
-        return -1;
-    }
-
-    struct bss bss_data = {0};
-
-    int err = bpf_map_lookup_elem(fd, &zero, &bss_data);
-    if (err)
-    {
-        fprintf(stderr, "[%s]: during getting run count\n", ERR);
-        return -1;
-    }
-
-    bss_data.run_cnt = 0;
-
-    err = bpf_map_update_elem(fd, &zero, &bss_data, BPF_ANY);
-    if (err)
-    {
-        fprintf(stderr, "[%s]: during setting run count\n", ERR);
-        return -1;
-    }
-
-    close(fd);
-    return 0;
-}
-
 static int percpu_output__get_fd()
 {
     char filename_map[256];
-    int err = snprintf(filename_map, sizeof(filename_map), "%s%s", PINNED_PATH, RECORD_MAP_NAME);
+    int err = snprintf(filename_map, sizeof(filename_map), "%s%s", PINNED_PATH, PERCPU_OUTPUT);
     if (err < 0)
     {
         fprintf(stderr, "[%s]: creating filename for pinned path: %s\n", ERR, strerror(errno));
@@ -214,16 +191,38 @@ static int percpu_output__get_fd()
     if (map_fd < 0)
     {
         fprintf(stderr, "[%s]: getting map fd from pinned path: %s\nbe sure %s program own '%s' map", ERR, filename_map,
-                prog_name, RECORD_MAP_NAME);
+                prog_name, PERCPU_OUTPUT);
         return -1;
     }
 
     return map_fd;
 }
 
-static void print_accumulated_stats()
+static int multiplexed_output__get_fd()
 {
-    char *fmt = "%s: %llu   %.2f/pkt - %u run_cnt\n";
+    char filename_map[256];
+    int err = snprintf(filename_map, sizeof(filename_map), "%s%s", PINNED_PATH, MULTIPLEXED_OUTPUT);
+    if (err < 0)
+    {
+        fprintf(stderr, "[%s]: creating filename for pinned path: %s\n", ERR, strerror(errno));
+        return -1;
+    }
+
+    // retrieve map fd from pinned path
+    int map_fd = bpf_obj_get(filename_map);
+    if (map_fd < 0)
+    {
+        fprintf(stderr, "[%s]: getting map fd from pinned path: %s\nbe sure %s program own '%s' map", ERR, filename_map,
+                prog_name, MULTIPLEXED_OUTPUT);
+        return -1;
+    }
+
+    return map_fd;
+}
+
+static void print_stats()
+{
+    char *fmt = "   %s: %llu   %.2f/pkt - %u run_cnt\n";
     for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
     {
         if (!psections[i_sec].record)
@@ -231,111 +230,101 @@ static void print_accumulated_stats()
             break;
         }
 
-        fprintf(stdout, fmt, psections[i_sec].record->name, psections[i_sec].record->value,
-                (float)psections[i_sec].record->value / psections[i_sec].record->run_cnt,
-                psections[i_sec].record->run_cnt);
+        fprintf(stdout, "%s\n", psections[i_sec].record->name);
+        for (int j = 0; j < MAX_METRICS; j++)
+        {
+            fprintf(stdout, fmt, psections[i_sec].metrics[j]->name, psections[i_sec].record->values[j],
+                    (float)psections[i_sec].record->values[j] / psections[i_sec].record->run_cnts[j],
+                    psections[i_sec].record->run_cnts[j]);
+        }
     }
 }
 
-static int handle_event(struct record_array percpu_data[MAX_ENTRIES_PERCPU_ARRAY], int i_sec)
+static void poll_print_stats()
 {
-    struct tm *tm;
-    char ts[32];
-    time_t t;
-
-    time(&t);
-    tm = localtime(&t);
-    strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-
-    // FORMAT OUTPUT
-    char *fmt = "%s     %s: %llu   %.2f/pkt - %u run_cnt\n";
-
-    // accumulate for each cpu
-    for (int cpu = 0; cpu < libbpf_num_possible_cpus(); cpu++)
-    {
-        if (percpu_data[cpu].name[0] == '\0')
-            continue;
-
-        psections[i_sec].record->value = percpu_data[cpu].value;
-        psections[i_sec].record->run_cnt = percpu_data[cpu].run_cnt;
-    }
-
-    if (!do_accumulate)
-    {
-        if (sample_rate && do_run_count)
-        {
-            fmt = "%s     %s: %llu      (%.2f%%)  %.2f/pkt - %u run_cnt\n";
-            fprintf(stdout, fmt, ts, psections[i_sec].record->name, psections[i_sec].record->value,
-                    (float)psections[i_sec].record->run_cnt / run_count__get() * 100,
-                    (float)psections[i_sec].record->value / psections[i_sec].record->run_cnt,
-                    psections[i_sec].record->run_cnt);
-        }
-        else
-        {
-            fprintf(stdout, fmt, ts, psections[i_sec].record->name, psections[i_sec].record->value,
-                    (float)psections[i_sec].record->value / psections[i_sec].record->run_cnt,
-                    psections[i_sec].record->run_cnt);
-        }
-    }
-
-    return 0;
-}
-
-static void poll_stats()
-{
-    int err;
-
+    char *fmt = "%s: %llu   %.2f/pkt - %u run_cnt\n";
     while (1)
     {
-        // read percpu array
-        for (int key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
+        for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
         {
-            if (!psections[key].record)
+            if (!psections[i_sec].record)
             {
                 break;
             }
 
-            err = bpf_map_lookup_elem(percpu_output_fd, &key, percpu_data);
-            if (err)
+            fprintf(stdout, "%s\n", psections[i_sec].record->name);
+            for (int j = 0; j < nr_selected_events--; j++)
             {
-                continue;
+                fprintf(stdout, fmt, psections[i_sec].metrics[j]->name, psections[i_sec].record->values[j],
+                        (float)psections[i_sec].record->values[j] / psections[i_sec].record->run_cnts[j],
+                        psections[i_sec].record->run_cnts[j]);
             }
-            handle_event(percpu_data, key);
-        }
+        };
         sleep(timeout_s);
+    }
+}
+
+static void poll_stats(int *key) // key is the id thread
+{
+    int err;
+    time_t start = time(NULL);
+    int nr_cpus = libbpf_num_possible_cpus();
+
+    __u64 values[MAX_METRICS];
+    __u64 run_cnts[MAX_METRICS];
+
+    struct record thread_stats[nr_cpus];
+    while (1)
+    {
+
+        err = bpf_map_lookup_elem(map_output_fd, key, thread_stats);
+        if (err)
+        {
+            continue;
+        }
+
+        // reset values and run_cnts
+        memset(values, 0, sizeof(values));
+        memset(run_cnts, 0, sizeof(run_cnts));
+
+        for (int cpu = 0; cpu < nr_cpus; cpu++)
+        {
+            // I don't know if check run_cnts[0] is the right thing to do
+            if (thread_stats[cpu].name[0] == '\0' || thread_stats[cpu].run_cnts[0] == 0)
+                continue;
+
+            for (int i = 0; i < MAX_METRICS; i++)
+            {
+                values[i] += thread_stats[cpu].values[i];
+                run_cnts[i] += thread_stats[cpu].run_cnts[i];
+            }
+        }
+        memcpy(psections[*key].record->values, values, sizeof(values));
+        memcpy(psections[*key].record->run_cnts, run_cnts, sizeof(run_cnts));
+        // usleep(10000);
     }
 }
 
 static void exit_cleanup(int signo)
 {
-    if (server_process == 0)
-    {
-        inxpect_server__close();
-        exit(EXIT_SUCCESS);
-    }
+    // if (interactive_mode)
+    //     inxpect_server__close();
 
-    // get the last not yet readed events
-    for (int key = 0; key < MAX_ENTRIES_PERCPU_ARRAY; key++)
+    if (!do_accumulate && thread_printer)
+        pthread_cancel(thread_printer);
+
+    // kill threads poll stats
+    for (int i = 0; i < MAX_PSECTIONS; i++)
     {
-        if (!psections[key].record)
+        if (!psections[i].record)
         {
             break;
         }
-
-        if (bpf_map_lookup_elem(percpu_output_fd, &key, percpu_data) < 0)
-        {
-            continue;
-        }
-        for (int cpu = 0; cpu < libbpf_num_possible_cpus(); cpu++)
-        {
-            if (percpu_data[cpu].name[0] == '\0')
-                continue;
-
-            psections[key].record->value = percpu_data[cpu].value;
-            psections[key].record->run_cnt = percpu_data[cpu].run_cnt;
-        }
+        if (threads_poll_stats[i])
+            pthread_cancel(threads_poll_stats[i]);
     }
-    print_accumulated_stats();
+
+    print_stats();
 
     int err;
     for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
@@ -345,18 +334,36 @@ static void exit_cleanup(int signo)
             break;
         }
 
-        if (psections[i_sec].metric->enabled)
+        for (int j = 0; j < MAX_METRICS; j++)
         {
-            err = event__disable(psections[i_sec].metric, running_cpu);
-            if (err)
+            if (!psections[i_sec].metrics[j])
             {
-                fprintf(stderr, "[%s]: during disabling event %s\n", ERR, psections[i_sec].metric->name);
+                continue;
+            }
+
+            if (psections[i_sec].metrics[j]->enabled)
+            {
+                err = event__disable(psections[i_sec].metrics[j], running_cpu);
+                if (err)
+                {
+                    fprintf(stderr, "[%s]: during disabling event %s\n", ERR, psections[i_sec].metrics[j]->name);
+                }
+
+                psections[i_sec].metrics[j] = NULL;
             }
         }
 
         // -------- FREE ALLOC IN PSECTIONS --------
         free(psections[i_sec].record);
     }
+
+    if (selected_events[0] != NULL)
+        for (int i = 0; i < nr_selected_events--; i++)
+        {
+            if (!selected_events[i])
+                break;
+            free(selected_events[i]);
+        }
 
     if (arg__event)
         free(arg__event);
@@ -369,7 +376,7 @@ int main(int argc, char **argv)
 {
     int err, opt;
     // retrieve opt
-    while ((opt = getopt(argc, argv, ":n:e:C:s:t:aic")) != -1)
+    while ((opt = getopt(argc, argv, "n:e:C:s:t:aic")) != -1)
     {
         switch (opt)
         {
@@ -383,8 +390,15 @@ int main(int argc, char **argv)
             strcpy(prog_name, optarg);
             break;
         case 'e':
-            arg__event = malloc(strlen(optarg) + 1);
-            strcpy(arg__event, optarg);
+            // arg_event = instructions,cycles,...
+            arg__event = strtok(optarg, ",");
+            while (arg__event != NULL)
+            {
+                selected_events[nr_selected_events] = malloc(strlen(arg__event) + 1);
+                strcpy(selected_events[nr_selected_events], arg__event);
+                nr_selected_events++;
+                arg__event = strtok(NULL, ",");
+            }
             break;
         case 'C':
             running_cpu = atoi(optarg);
@@ -397,6 +411,9 @@ int main(int argc, char **argv)
             break;
         case 'c':
             do_run_count = 1;
+            break;
+        case 'd':
+            duration = atoi(optarg);
             break;
         case 'a':
             do_accumulate = 1;
@@ -421,15 +438,9 @@ int main(int argc, char **argv)
         exit_cleanup(0);
     }
 
-    if (arg__event == NULL)
+    if (!nr_selected_events)
     {
         fprintf(stderr, "[%s]: event name is required\n", ERR);
-        exit_cleanup(0);
-    }
-
-    if (!event__name_isvalid(arg__event))
-    {
-        fprintf(stderr, "[%s]: event name %s is not valid\n", ERR, arg__event);
         exit_cleanup(0);
     }
 
@@ -485,31 +496,46 @@ int main(int argc, char **argv)
             exit_cleanup(0);
         }
 
-        struct event *metric = event__get_by_name(arg__event);
-        if (!metric)
+        for (int i = 0; i < nr_selected_events--; i++)
         {
-            fprintf(stderr, "[%s]: event %s not found\n", ERR, arg__event);
-            exit_cleanup(0);
+            // manage events
+            struct event *metric = NULL;
+
+            if (selected_events[i][0] == 'r') // if the event is a raw event
+            {
+                metric = malloc(sizeof(struct event));
+                struct event tmp_metric = {
+                    .name = selected_events[i],
+                    .code = atoi(selected_events[i] + 1),
+                };
+
+                memcpy(metric, &tmp_metric, sizeof(struct event));
+            }
+            else // otherwise is a perf event
+            {
+                metric = event__get_by_name(selected_events[i]);
+                if (!metric)
+                {
+                    fprintf(stderr, "[%s]: event %s not found\n", ERR, arg__event);
+                    exit_cleanup(0);
+                }
+            }
+
+            strcpy(psections[i_sec].record->name, psections_name_list[i_sec]);
+
+            // enable the event
+            err = event__enable(metric, running_cpu);
+            if (err)
+            {
+                fprintf(stderr, "[%s]: during enabling event %s\n", ERR, arg__event);
+                exit_cleanup(0);
+            }
+
+            // set to the psection the related event
+            psections[i_sec].metrics[i] = metric;
+
+            psections[i_sec].record->counters[(i % 4)] = psections[i_sec].metrics[i]->reg_h;
         }
-
-        strcpy(psections[i_sec].record->name, psections_name_list[i_sec]);
-
-        // enable the event
-        err = event__enable(metric, running_cpu);
-        if (err)
-        {
-            fprintf(stderr, "[%s]: during enabling event %s\n", ERR, arg__event);
-            exit_cleanup(0);
-        }
-
-        // set to the psection the related event
-        psections[i_sec].metric = metric;
-
-        // set the event to the record array
-        psections[i_sec].record->counter = psections[i_sec].metric->reg_h;
-
-        // TODO: currently reg_h is the counter, so we can use it. But I want to store the index register, so in future
-        // this should be reg_h - MAX REGISETR
     }
 
     if (sample_rate)
@@ -520,8 +546,8 @@ int main(int argc, char **argv)
     }
 
     // retrieve percpu_output fd
-    percpu_output_fd = percpu_output__get_fd();
-    if (percpu_output_fd < 0)
+    map_output_fd = percpu_output__get_fd();
+    if (map_output_fd < 0)
     {
         exit_cleanup(0);
     }
@@ -529,43 +555,51 @@ int main(int argc, char **argv)
     // set signal handler
     signal(SIGINT, exit_cleanup);
     signal(SIGTERM, exit_cleanup);
+    if (duration)
+        signal(SIGALRM, exit_cleanup);
 
-    err = percput_output__clean_and_init(percpu_output_fd, running_cpu);
+    err = percput_output__clean_and_init(map_output_fd, running_cpu);
     if (err)
         exit_cleanup(0);
 
-    err = run_count__reset();
+    err = run_count__reset(prog_fd);
     if (err)
-    {
         fprintf(stderr, "[%s]: during run count reset\n", WARN);
+
+    if (!do_accumulate)
+        pthread_create(&thread_printer, NULL, (void *)poll_print_stats, NULL);
+
+    for (int thread_id = 0; thread_id < MAX_PSECTIONS; thread_id++)
+    {
+        // if the record is NULL, we are at the end of the list and we avoid to create a thread
+        if (!psections[thread_id].record)
+        {
+            break;
+        }
+        pthread_create(&threads_poll_stats[thread_id], NULL, (void *)poll_stats, (int *)&thread_id);
     }
+
+    alarm(duration);
 
     if (interactive_mode) // SERVER
-    {                     // fork the server, the parent will poll the stats
-        server_process = fork();
-        if (server_process == 0)
-        {
-            err = inxpect_server__init_server(0);
-            if (err)
-            {
-                exit_cleanup(0);
-            }
+    {
+        /*         err = inxpect_server__init_server(0); // port = 0 -> default 8080 port
+                if (err)
+                {
+                    exit_cleanup(0);
+                }
 
-            err = inxpect_server__start_and_polling();
-            if (err)
-            {
-                exit_cleanup(0);
-            }
-        }
-        else if (server_process < 0)
-        {
-            fprintf(stderr, "[%s]: during forking, server not started\n", ERR);
-            exit_cleanup(0);
-        }
+                err = inxpect_server__start_and_polling();
+                if (err)
+                {
+                    exit_cleanup(0);
+                } */
+    }
+    else
+    {
+        pause(); // wait for signal
     }
 
-    // polling stats
-    poll_stats();
     exit_cleanup(0);
     return 0;
 }
