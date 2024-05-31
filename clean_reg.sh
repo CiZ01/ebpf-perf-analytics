@@ -1,0 +1,5 @@
+#! /bin/bash
+
+cpu=$1
+
+sudo wrmsr 0x186 0x0 -p $cpu &&  sudo wrmsr 0x187 0x0 -p $cpu  &&  sudo wrmsr 0x188 0x0 -p $cpu  &&  sudo wrmsr 0x189 0x0 -p $cpu 

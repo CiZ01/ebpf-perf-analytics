@@ -1,4 +1,4 @@
-#include <linux/bpf.h>
+clean_ #include<linux / bpf.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <stdio.h>
@@ -14,7 +14,7 @@
 
 #include "mykperf_module.h"
 
-struct record *values;
+    struct record *values;
 struct xdp_pass_kern_trace_rb *skel;
 int ifindex;
 

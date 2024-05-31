@@ -136,11 +136,13 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
     }
 
     // parse the part of the buffer that contains the sections
-    struct rodata *rodata = (struct rodata *)buffer;
+    // struct rodata *rodata = (struct rodata *)buffer;
+    struct rodata *rodata = malloc(sizeof(struct rodata));
+    memcpy(rodata, buffer, sizeof(buffer));
 
     for (int i = 0; i < MAX_PSECTIONS; i++)
     {
-        if (rodata->sections[i][0] == 0)
+        if (rodata->sections[i][0] == '\0')
         {
             break;
         }
@@ -148,7 +150,7 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
     }
 
     free(buffer);
-    close(fd);
+    free(rodata);
     return 0;
 }
 
@@ -174,6 +176,103 @@ static int run_count__get()
 
     close(fd);
     return bss_data.run_cnt;
+}
+
+static int multiplex__set_rate(int multiplex_rate)
+{
+    int fd = -1;
+    int zero = 0;
+    fd = get_data_map_fd(prog_fd);
+    if (fd < 0)
+    {
+        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        return -1;
+    }
+
+    struct bpf_map_info info = {0};
+    int info_len = sizeof(info);
+
+    int err = bpf_map_get_info_by_fd(fd, &info, &info_len);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during getting map data info: %s\n", ERR, strerror(errno));
+        return -1;
+    }
+
+    // TODO: check this part, could be dangerous
+    unsigned char *buffer = calloc(info.value_size, sizeof(unsigned char));
+    err = bpf_map_lookup_elem(fd, &zero, buffer);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during data retrieve\n", ERR);
+        free(buffer);
+        return -1;
+    }
+
+    struct data *data = malloc(sizeof(struct data));
+    memcpy(data, buffer, sizeof(buffer));
+    free(buffer);
+
+    data->multiplex_rate = multiplex_rate;
+
+    err = bpf_map_update_elem(fd, &zero, data, BPF_ANY);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during updating data map\n", ERR);
+        free(data);
+        return -1;
+    }
+    free(data);
+    return 0;
+}
+
+static int multiplex__set_num_counters(const __u8 num_counters)
+{
+    int fd = -1;
+    int zero = 0;
+    fd = get_data_map_fd(prog_fd);
+    if (fd < 0)
+    {
+        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        return -1;
+    }
+
+    struct bpf_map_info info = {0};
+    int info_len = sizeof(info);
+
+    int err = bpf_map_get_info_by_fd(fd, &info, &info_len);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during getting map data info: %s\n", ERR, strerror(errno));
+        return -1;
+    }
+
+    // TODO: check this part, could be dangerous
+    unsigned char *buffer = calloc(info.value_size, sizeof(unsigned char));
+    err = bpf_map_lookup_elem(fd, &zero, buffer);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during data retrieve\n", ERR);
+        free(buffer);
+        return -1;
+    }
+
+    struct data *data = malloc(sizeof(struct data));
+    memcpy(data, buffer, sizeof(buffer));
+
+    data->num_counters = num_counters;
+
+    err = bpf_map_update_elem(fd, &zero, data, BPF_ANY);
+    if (err)
+    {
+        fprintf(stderr, "[%s]: during updating data map\n", ERR);
+        free(buffer);
+        free(data);
+        return -1;
+    }
+    free(buffer);
+    free(data);
+    return 0;
 }
 
 static int percpu_output__get_fd()
@@ -233,6 +332,10 @@ static void print_stats()
         fprintf(stdout, "%s\n", psections[i_sec].record->name);
         for (int j = 0; j < MAX_METRICS; j++)
         {
+            if (!psections[i_sec].metrics[j])
+            {
+                continue;
+            }
             fprintf(stdout, fmt, psections[i_sec].metrics[j]->name, psections[i_sec].record->values[j],
                     (float)psections[i_sec].record->values[j] / psections[i_sec].record->run_cnts[j],
                     psections[i_sec].record->run_cnts[j]);
@@ -253,7 +356,7 @@ static void poll_print_stats()
             }
 
             fprintf(stdout, "%s\n", psections[i_sec].record->name);
-            for (int j = 0; j < nr_selected_events--; j++)
+            for (int j = 0; j < nr_selected_events; j++)
             {
                 fprintf(stdout, fmt, psections[i_sec].metrics[j]->name, psections[i_sec].record->values[j],
                         (float)psections[i_sec].record->values[j] / psections[i_sec].record->run_cnts[j],
@@ -264,8 +367,9 @@ static void poll_print_stats()
     }
 }
 
-static void poll_stats(int *key) // key is the id thread
+static void poll_stats(const int key) // key is the id thread
 {
+
     int err;
     time_t start = time(NULL);
     int nr_cpus = libbpf_num_possible_cpus();
@@ -276,8 +380,7 @@ static void poll_stats(int *key) // key is the id thread
     struct record thread_stats[nr_cpus];
     while (1)
     {
-
-        err = bpf_map_lookup_elem(map_output_fd, key, thread_stats);
+        err = bpf_map_lookup_elem(map_output_fd, &key, thread_stats);
         if (err)
         {
             continue;
@@ -299,8 +402,8 @@ static void poll_stats(int *key) // key is the id thread
                 run_cnts[i] += thread_stats[cpu].run_cnts[i];
             }
         }
-        memcpy(psections[*key].record->values, values, sizeof(values));
-        memcpy(psections[*key].record->run_cnts, run_cnts, sizeof(run_cnts));
+        memcpy(psections[key].record->values, values, sizeof(values));
+        memcpy(psections[key].record->run_cnts, run_cnts, sizeof(run_cnts));
         // usleep(10000);
     }
 }
@@ -471,7 +574,7 @@ int main(int argc, char **argv)
     // at this point the we are sure that the program is loaded
 
     // retrieve the psection from xdp program
-    char psections_name_list[MAX_PSECTIONS][MAX_PROG_FULL_NAME];
+    char psections_name_list[MAX_PSECTIONS][MAX_PROG_FULL_NAME] = {0};
     err = psections__get_list(psections_name_list);
     if (err)
     {
@@ -482,7 +585,7 @@ int main(int argc, char **argv)
     // setting psections
     for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
     {
-        if (strlen(psections_name_list[i_sec]) == 0)
+        if (psections_name_list[i_sec][0] == '\0')
         {
             psections[i_sec].record = NULL;
             break;
@@ -496,7 +599,7 @@ int main(int argc, char **argv)
             exit_cleanup(0);
         }
 
-        for (int i = 0; i < nr_selected_events--; i++)
+        for (int i = 0; i < nr_selected_events; i++)
         {
             // manage events
             struct event *metric = NULL;
@@ -545,8 +648,14 @@ int main(int argc, char **argv)
             exit_cleanup(0);
     }
 
-    // retrieve percpu_output fd
-    map_output_fd = percpu_output__get_fd();
+    /*     // retrieve percpu_output fd
+        map_output_fd = percpu_output__get_fd();
+        if (map_output_fd < 0)
+        {
+            exit_cleanup(0);
+        } */
+
+    map_output_fd = multiplexed_output__get_fd();
     if (map_output_fd < 0)
     {
         exit_cleanup(0);
@@ -557,6 +666,10 @@ int main(int argc, char **argv)
     signal(SIGTERM, exit_cleanup);
     if (duration)
         signal(SIGALRM, exit_cleanup);
+
+    err = multiplex__set_num_counters(nr_selected_events);
+    if (err)
+        exit_cleanup(0);
 
     err = percput_output__clean_and_init(map_output_fd, running_cpu);
     if (err)
@@ -576,7 +689,7 @@ int main(int argc, char **argv)
         {
             break;
         }
-        pthread_create(&threads_poll_stats[thread_id], NULL, (void *)poll_stats, (int *)&thread_id);
+        pthread_create(&threads_poll_stats[thread_id], NULL, (void *)poll_stats, thread_id);
     }
 
     alarm(duration);

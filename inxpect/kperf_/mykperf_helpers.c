@@ -23,7 +23,7 @@ static inline __u64 ptr_to_u64(const void *ptr)
  */
 int get_bss_map_fd(int prog_fd)
 {
-    
+
     int fd = -1;
 
     struct bpf_prog_info info = {0};
@@ -137,6 +137,63 @@ int get_rodata_map_fd(int prog_fd)
     return fd;
 }
 
+int get_data_map_fd(int prog_fd)
+{
+    unsigned int id = 0;
+    int err = -1;
+
+    int fd = -1;
+
+    struct bpf_prog_info info = {0};
+    __u32 len = sizeof(info);
+    // needed to know the number of maps
+    if (bpf_prog_get_info_by_fd(prog_fd, &info, &len))
+    {
+        return err;
+    }
+
+    // TODO : IMPROVE THIS
+
+    int num_maps = info.nr_map_ids;
+    __u32 map_ids[num_maps];
+
+    struct bpf_prog_info info2 = {0};
+    len = sizeof(info2);
+
+    info2.nr_map_ids = num_maps; // needed otherwise map_ids is not filled
+    info2.map_ids = ptr_to_u64(map_ids);
+    // retrieve the map ids
+    if (bpf_prog_get_info_by_fd(prog_fd, &info2, &len))
+    {
+        return err;
+    }
+
+    struct bpf_map_info info_map = {};
+    len = sizeof(info_map);
+
+    for (unsigned int i = 0; i < num_maps; i++)
+    {
+        fd = bpf_map_get_fd_by_id(map_ids[i]);
+        if (fd < 0)
+        {
+            return err;
+        }
+
+        err = bpf_map_get_info_by_fd(fd, &info_map, &len);
+        if (err)
+        {
+            return err;
+        }
+
+        if (strcmp(DATA_MAP, info_map.name + strlen(info_map.name) - strlen(DATA_MAP)) == 0)
+        {
+            break;
+        }
+        close(fd);
+    }
+    fprintf(stdout, "Map name: %s\n", info_map.name);
+    return fd;
+}
 /*
  * Set the shared variable beetwen usersapce and xdp to `out_reg` value, so xdp knows where read
  * the counter value.

@@ -19,7 +19,7 @@
 #define MAX_PSECTIONS 8
 #define PINNED_PATH "/sys/fs/bpf/"
 #define PERCPU_OUTPUT "percpu_output"
-#define MULTIPLEXED_OUTPUT "multiplexed_out" // the original name is too long | multiplexed_output
+#define MULTIPLEXED_OUTPUT "multiplexed_output" // the original name is too long | multiplexed_output
 
 #define MAX_PROG_FULL_NAME 16
 
