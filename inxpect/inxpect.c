@@ -345,7 +345,7 @@ static void print_stats()
 
 static void poll_print_stats()
 {
-    char *fmt = "%s: %llu   %.2f/pkt - %u run_cnt\n";
+    char *fmt = "   - %s: %llu   %.2f/pkt - %u run_cnt\n";
     while (1)
     {
         for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
@@ -355,7 +355,7 @@ static void poll_print_stats()
                 break;
             }
 
-            fprintf(stdout, "%s\n", psections[i_sec].record->name);
+            fprintf(stdout, "%s:\n", psections[i_sec].record->name);
             for (int j = 0; j < nr_selected_events; j++)
             {
                 fprintf(stdout, fmt, psections[i_sec].metrics[j]->name, psections[i_sec].record->values[j],
@@ -531,7 +531,7 @@ int main(int argc, char **argv)
         }
     }
 
-    percpu_data = malloc(libbpf_num_possible_cpus() * sizeof(struct record_array));
+    percpu_data = malloc(libbpf_num_possible_cpus() * sizeof(struct record));
 
     // ---------- ARGS CHECKS ----------
     // TODO: check any error
@@ -592,7 +592,7 @@ int main(int argc, char **argv)
         }
 
         // alloc memory for the record
-        psections[i_sec].record = malloc(sizeof(struct record_array));
+        psections[i_sec].record = calloc(1, sizeof(struct record));
         if (!psections[i_sec].record)
         {
             fprintf(stderr, "[%s]: during memory allocation\n", ERR);

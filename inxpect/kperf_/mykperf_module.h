@@ -32,7 +32,7 @@ struct record
     char name[16];
     __u64 run_cnts[4];
     __u64 values[4];
-    __u8 counters[4];
+    __u32 counters[4];
 } __attribute__((aligned(64)));
 
 #define BPF_MYKPERF_INIT_TRACE()                                                                                       \
