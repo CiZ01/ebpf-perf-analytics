@@ -6,6 +6,8 @@
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/uaccess.h>
+
+#include <linux/cpumask.h>
 #include "mykperf_module.h"
 #include "mykperf_ioctl.h"
 
@@ -182,36 +184,78 @@ static void __add_event(__u64 reg, __u64 event, int cpu)
 // return zero mean error
 static __u64 __enable_event(__u64 event, int cpu)
 {
-    __u64 r;
+    __u32 r;
     uint32_t l, h;
     int err;
+    int _cpu = 0;
 
-    // find a free register
+    // TODO : do this check on our event, and overwrite other events. This permit us to find the right register and having the same register for all cpus.
+    //  find a free register
     for (r = FIRST_MSR_EV_SELECT_REG; r < (FIRST_MSR_EV_SELECT_REG + MAX_MSR_PROG_REG); r++)
     {
-        // currently work with just one cpu
-        err = rdmsr_safe_on_cpu(cpu, r, &l, &h);
-        if (err)
+        if (cpu == -1)
         {
-            printk("Error reading MSR: %d\n", err);
-            return -1;
-        }
+            for_each_online_cpu(_cpu)
+            {
+                err = rdmsr_safe_on_cpu(_cpu, r, &l, &h);
+                if (err)
+                {
+                    printk("Error reading MSR %x register on cpu %d: \n", r, _cpu, err);
+                    return -1;
+                }
 
-        // check if l and h are zero
-        if ((l | h) == 0)
+                // check if l and h are zero
+                if ((l | h) == 0)
+                {
+                    break;
+                }
+            }
+            // check if l and h are zero
+            if ((l | h) == 0)
+            {
+                break;
+            }
+        }
+        else
         {
-            break;
+            err = rdmsr_safe_on_cpu(cpu, r, &l, &h);
+            if (err)
+            {
+                printk("Error reading MSR: %d\n", err);
+                return -1;
+            }
+
+            // check if l and h are zero
+            if ((l | h) == 0)
+            {
+                break;
+            }
         }
     }
 
     event = CAP_EVENT | event; // add CAP_EVENT to event
     l = event & 0xFFFFFFFF;
     h = event >> 32;
-    err = wrmsr_on_cpu(cpu, r, l, h);
-    if (err)
+    if (cpu == -1)
     {
-        printk("Error writing MSR: %d\n", err);
-        return -1;
+        for_each_online_cpu(_cpu)
+        {
+            err = wrmsr_safe_on_cpu(_cpu, r, l, h);
+            if (err)
+            {
+                printk("Error writing MSR: %d on cpu: %d\n", err, _cpu);
+                return -1;
+            }
+        }
+    }
+    else
+    {
+        err = wrmsr_safe_on_cpu(cpu, r, l, h);
+        if (err)
+        {
+            printk("Error writing MSR: %d\n", err);
+            return -1;
+        }
     }
 
     __add_event(r, event, cpu);
@@ -225,16 +269,31 @@ static int __disable_event(__u64 reg, __u64 event, int cpu)
 {
     event = CAP_EVENT | event;
     int err;
-    struct enabled_events_list *temp, *next;
+    struct enabled_events_list *temp;
     list_for_each_entry(temp, &head, list)
     {
         if (temp->event == event && temp->reg == reg + FIRST_MSR_EV_SELECT_REG && temp->cpu == cpu)
         {
-            err = wrmsr_on_cpu(cpu, temp->reg, 0, 0);
-            if (err)
+            if (cpu < -1)
             {
-                printk("Error writing MSR: %d\n", err);
-                return -1;
+                for_each_online_cpu(cpu)
+                {
+                    err = wrmsr_safe_on_cpu(cpu, temp->reg, 0, 0);
+                    if (err)
+                    {
+                        printk("Error writing MSR: %d\n", err);
+                        return -1;
+                    }
+                }
+            }
+            else
+            {
+                err = wrmsr_safe_on_cpu(cpu, temp->reg, 0, 0);
+                if (err)
+                {
+                    printk("Error writing MSR: %d\n", err);
+                    return -1;
+                }
             }
             list_del(&temp->list);
             kfree(temp);

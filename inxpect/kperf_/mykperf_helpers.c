@@ -81,7 +81,6 @@ int get_bss_map_fd(int prog_fd)
 
 int get_rodata_map_fd(int prog_fd)
 {
-    unsigned int id = 0;
     int err = -1;
 
     int fd = -1;
@@ -139,7 +138,6 @@ int get_rodata_map_fd(int prog_fd)
 
 int get_data_map_fd(int prog_fd)
 {
-    unsigned int id = 0;
     int err = -1;
 
     int fd = -1;
@@ -253,7 +251,7 @@ int enable_event(__u64 event, int *out_reg, int cpu)
         return -1;
     }
 
-    fprintf(stdout, "Enabling event %llu\n", event);
+    fprintf(stdout, "Enabling event %llx\n", event);
 
     struct message msg = {
         .event = event,
@@ -303,7 +301,7 @@ int disable_event(__u64 event, __u64 reg, int cpu)
 
     if (ioctl(fd, DISABLE_EVENT, &msg) < 0)
     {
-        perror("Failed to perform IOCTL GET.");
+        perror("Failed to perform IOCTL GET");
         close(fd);
         return -1;
     }

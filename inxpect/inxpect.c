@@ -53,7 +53,7 @@ int multiplexed_mode = 0;
 char *arg__event = NULL;
 char *selected_events[MAX_METRICS];
 int nr_selected_events = 0;
-int running_cpu = 0;
+int running_cpu = -1;
 int sample_rate = 0;
 
 // server
@@ -416,6 +416,9 @@ static void exit_cleanup(int signo)
     if (!do_accumulate && thread_printer)
         pthread_cancel(thread_printer);
 
+    fprintf(stdout, "diocxa");
+    fflush(stdout);
+
     // kill threads poll stats
     for (int i = 0; i < MAX_PSECTIONS; i++)
     {
@@ -457,19 +460,15 @@ static void exit_cleanup(int signo)
         }
 
         // -------- FREE ALLOC IN PSECTIONS --------
-        free(psections[i_sec].record);
+        if (psections[i_sec].record)
+            free(psections[i_sec].record);
     }
-
     if (selected_events[0] != NULL)
         for (int i = 0; i < nr_selected_events--; i++)
         {
-            if (!selected_events[i])
-                break;
-            free(selected_events[i]);
+            if (selected_events[i])
+                free(selected_events[i]);
         }
-
-    if (arg__event)
-        free(arg__event);
 
     fprintf(stdout, "[%s]: exiting\n", DEBUG);
     exit(EXIT_SUCCESS);
@@ -619,7 +618,7 @@ int main(int argc, char **argv)
                 metric = event__get_by_name(selected_events[i]);
                 if (!metric)
                 {
-                    fprintf(stderr, "[%s]: event %s not found\n", ERR, arg__event);
+                    fprintf(stderr, "[%s]: event %s not found\n", ERR, metric->name);
                     exit_cleanup(0);
                 }
             }
@@ -630,7 +629,7 @@ int main(int argc, char **argv)
             err = event__enable(metric, running_cpu);
             if (err)
             {
-                fprintf(stderr, "[%s]: during enabling event %s\n", ERR, arg__event);
+                fprintf(stderr, "[%s]: during enabling event %s\n", ERR, metric->name);
                 exit_cleanup(0);
             }
 
