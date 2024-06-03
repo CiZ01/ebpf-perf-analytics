@@ -1,6 +1,8 @@
 #ifndef __INXPECT_SERVER_H__
 #define __INXPECT_SERVER_H__
 
+#include "includes/cJSON.h"
+
 #define PORT 8080
 #define BUFFER_SIZE 1024
 
@@ -39,6 +41,7 @@ struct inxpect_server__message_t
  * }
  */
 
+void __array_to_number_json(cJSON *array_json, void *array, int size, int type_size);
 void inxpect_server__message_to_json(struct inxpect_server__message_t *message, char *json);
 void inxpect_server__json_to_message(char *json, struct inxpect_server__message_t *message);
 void inxpect_server__psection_to_json(struct psection_t *psection, char *json);

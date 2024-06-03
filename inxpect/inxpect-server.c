@@ -13,7 +13,6 @@
 #include <linux/bpf.h>
 #include <bpf/bpf.h>
 #include <bpf/libbpf.h>
-#include "includes/cJSON.h"
 
 #include "inxpect.h"
 #include "inxpect-server.h"
@@ -22,6 +21,18 @@ int server_fd, client_socket, opt = 1;
 struct sockaddr_in address;
 int addrlen = sizeof(address);
 int BUFFSIZE = 1024;
+
+void __array_to_number_json(cJSON *array_json, void *array, int size, int type_size)
+{
+    cJSON *array_item;
+    int len = size / type_size;
+    for (int i = 0; i < len; i++)
+    { // typeof is a gcc extension
+        array_item = cJSON_CreateNumber(*(double *)array + (type_size * i));
+        printf("[%s]: value: %llu", DEBUG, *(unsigned long long *)array + i);
+        cJSON_AddItemToArray(array_json, array_item);
+    }
+}
 
 void inxpect_server__message_to_json(struct inxpect_server__message_t *message, char *json)
 {
@@ -84,11 +95,27 @@ void inxpect_server__json_to_message(char *json, struct inxpect_server__message_
 void inxpect_server__psection_to_json(struct psection_t *psection, char *json)
 {
     cJSON *root = cJSON_CreateObject();
+
     cJSON_AddStringToObject(root, "name", psection->record->name);
-    cJSON_AddNumberToObject(root, "enabled", psection->metric->enabled);
-    cJSON_AddNumberToObject(root, "cpu", psection->metric->cpu);
-    cJSON_AddNumberToObject(root, "code", psection->metric->code);
-    cJSON_AddStringToObject(root, "event", psection->metric->name);
+    cJSON *metrics = cJSON_CreateArray();
+
+    for (int i = 0; i < MAX_METRICS; i++)
+    {
+        if (!psection->metrics[i])
+        {
+            break;
+        }
+        cJSON *array_item = cJSON_CreateObject();
+        cJSON_AddStringToObject(array_item, "name", psection->metrics[i]->name);
+        cJSON_AddNumberToObject(array_item, "code", psection->metrics[i]->code);
+        cJSON_AddNumberToObject(array_item, "cpu", psection->metrics[i]->cpu);
+        cJSON_AddNumberToObject(array_item, "enable", psection->metrics[i]->enabled);
+        cJSON_AddNumberToObject(array_item, "reg_h", psection->metrics[i]->reg_h);
+
+        cJSON_AddItemToArray(metrics, array_item);
+    }
+
+    cJSON_AddItemToObject(root, "metrics", metrics);
 
     char *json_string = cJSON_Print(root);
     strcpy(json, json_string);
@@ -189,6 +216,7 @@ int inxpect_response__event_set(int sock, struct inxpect_server__message_t *msg)
         buffer: {
             "name": "psection_name",
             "event": "event_name",
+            "i_counter": counter index
         }
     */
 
@@ -197,8 +225,19 @@ int inxpect_response__event_set(int sock, struct inxpect_server__message_t *msg)
     cJSON *root = cJSON_Parse(msg->buffer);
     cJSON *psection_name = cJSON_GetObjectItemCaseSensitive(root, "name");
     cJSON *event_name = cJSON_GetObjectItemCaseSensitive(root, "event");
+    cJSON *i_counter = cJSON_GetObjectItemCaseSensitive(root, "i_counter");
 
     if (!cJSON_IsString(psection_name) || !cJSON_IsString(event_name))
+    {
+        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INVALID;
+        msg->buffer = NULL;
+        sendMessage(sock, *msg);
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    if (!cJSON_IsNumber(i_counter))
     {
         msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
         msg->value = INXPECT_SERVER__MESSAGE_ERROR__INVALID;
@@ -220,7 +259,7 @@ int inxpect_response__event_set(int sock, struct inxpect_server__message_t *msg)
         return -1;
     }
 
-    err = psection__change_event(psection, event_name->valuestring);
+    err = psection__change_event(psection, event_name->valuestring, i_counter->valueint);
     if (err)
     {
         msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
@@ -240,6 +279,7 @@ int inxpect_response__psections_get(int sock, struct inxpect_server__message_t *
 {
     cJSON *psections_list = cJSON_CreateArray();
     struct psection_t *psection;
+    // !! with this approch we are going out of the server's world
     char buff[BUFFSIZE];
     for (int i = 0; i < MAX_PSECTIONS; i++)
     {
@@ -293,7 +333,7 @@ int inxpect_response__sample_rate_set(int sock, struct inxpect_server__message_t
     return 0;
 }
 
-int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server__message_t *msg)
+int inxpect_response__records_get_by_psection_name(int sock, struct inxpect_server__message_t *msg)
 {
     cJSON *root = cJSON_Parse(msg->buffer);
     cJSON *psection_name = cJSON_GetObjectItemCaseSensitive(root, "name");
@@ -309,7 +349,7 @@ int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server
 
     cJSON_Delete(root);
 
-    struct record_array *record = stats__get_by_psection_name(psection_name->valuestring);
+    struct record *record = record__get_by_psection_name(psection_name->valuestring);
     if (!record)
     {
         msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
@@ -325,9 +365,30 @@ int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server
 
     cJSON *buffer_json = cJSON_CreateObject();
     cJSON_AddStringToObject(buffer_json, "name", record->name);
-    cJSON_AddNumberToObject(buffer_json, "value", record->value);
-    cJSON_AddNumberToObject(buffer_json, "run_cnt", record->run_cnt);
-    cJSON_AddNumberToObject(buffer_json, "counter", record->counter);
+
+    cJSON *values = cJSON_CreateArray();
+    for (int i = 0; i < MAX_METRICS; i++)
+    {
+        cJSON *array_item = cJSON_CreateNumber(record->values[i]);
+        cJSON_AddItemToArray(values, array_item);
+    }
+    cJSON_AddItemToObject(buffer_json, "values", values);
+
+    cJSON *run_counts = cJSON_CreateArray();
+    for (int i = 0; i < MAX_METRICS; i++)
+    {
+        cJSON *array_item = cJSON_CreateNumber(record->run_cnts[i]);
+        cJSON_AddItemToArray(run_counts, array_item);
+    }
+    cJSON_AddItemToObject(buffer_json, "run_counts", run_counts);
+
+    cJSON *counters = cJSON_CreateArray();
+    for (int i = 0; i < MAX_METRICS; i++)
+    {
+        cJSON *array_item = cJSON_CreateNumber(record->counters[i]);
+        cJSON_AddItemToArray(counters, array_item);
+    }
+    cJSON_AddItemToObject(buffer_json, "counters", counters);
 
     msg->buffer = cJSON_Print(buffer_json);
     sendMessage(sock, *msg);
@@ -337,41 +398,58 @@ int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server
     return 0;
 }
 
-int inxpect_respose__records_get(int sock, struct inxpect_server__message_t *msg)
+int inxpect_response__records_get_all(int sock, struct inxpect_server__message_t *msg)
 {
-    cJSON *root = cJSON_Parse(msg->buffer);
-    cJSON *psection_name = cJSON_GetObjectItemCaseSensitive(root, "name");
-    if (!cJSON_IsString(psection_name))
-    {
-        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
-        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INVALID;
-        msg->buffer = NULL;
-        sendMessage(sock, *msg);
-        cJSON_Delete(root);
-        return -1;
-    }
-
-    cJSON_Delete(root);
-
-    struct record_array *record = record__get_by_psection_name(psection_name->valuestring);
-    if (!record)
+    struct record records[MAX_PSECTIONS] = {0};
+    record__get_all(records);
+    if (records[0].name[0] == '\0') // !! I don't know if this works
     {
         msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
         msg->value = INXPECT_SERVER__MESSAGE_ERROR__INTERNAL;
         msg->buffer = NULL;
         sendMessage(sock, *msg);
-        cJSON_Delete(root);
         return -1;
     }
 
     msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
     msg->value = INXPECT_SERVER__MESSAGE_ERROR__NONE;
 
-    cJSON *buffer_json = cJSON_CreateObject();
-    cJSON_AddStringToObject(buffer_json, "name", record->name);
-    cJSON_AddNumberToObject(buffer_json, "value", record->value);
-    cJSON_AddNumberToObject(buffer_json, "run_cnt", record->run_cnt);
-    cJSON_AddNumberToObject(buffer_json, "counter", record->counter);
+    cJSON *buffer_json = cJSON_CreateArray();
+    for (int i = 0; i < MAX_PSECTIONS; i++)
+    {
+        if (records[i].name[0] == '\0')
+        {
+            break;
+        }
+        cJSON *record_json = cJSON_CreateObject();
+        cJSON_AddStringToObject(record_json, "name", records[i].name);
+
+        cJSON *values = cJSON_CreateArray();
+        for (int j = 0; j < MAX_METRICS; j++)
+        {
+            cJSON *array_item = cJSON_CreateNumber(records[i].values[j]);
+            cJSON_AddItemToArray(values, array_item);
+        }
+        cJSON_AddItemToObject(record_json, "values", values);
+
+        cJSON *run_counts = cJSON_CreateArray();
+        for (int j = 0; j < MAX_METRICS; j++)
+        {
+            cJSON *array_item = cJSON_CreateNumber(records[i].run_cnts[j]);
+            cJSON_AddItemToArray(run_counts, array_item);
+        }
+        cJSON_AddItemToObject(record_json, "run_counts", run_counts);
+
+        cJSON *counters = cJSON_CreateArray();
+        for (int j = 0; j < MAX_METRICS; j++)
+        {
+            cJSON *array_item = cJSON_CreateNumber(records[i].counters[j]);
+            cJSON_AddItemToArray(counters, array_item);
+        }
+        cJSON_AddItemToObject(record_json, "counters", counters);
+
+        cJSON_AddItemToArray(buffer_json, record_json);
+    }
 
     msg->buffer = cJSON_Print(buffer_json);
     sendMessage(sock, *msg);
@@ -423,6 +501,9 @@ int handler()
             break;
         case INXPECT_SERVER__MESSAGE_CODE__PSECTIONS_GET:
             inxpect_response__psections_get(client_socket, message);
+            break;
+        case INXPECT_SERVER__MESSAGE_CODE__RECORDS_GET:
+            inxpect_response__records_get_all(client_socket, message);
             break;
         default:
             inxpect_response__unknown(client_socket, message);

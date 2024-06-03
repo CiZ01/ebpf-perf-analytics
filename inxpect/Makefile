@@ -1,6 +1,6 @@
 TARGET := inxpect
 SRCS := $(wildcard *.c)
-SRCS :=  $(filter-out inxpect-server.c, $(SRCS)) # debug
+#SRCS :=  $(filter-out inxpect-server.c, $(SRCS)) debug
 OBJS := $(SRCS:.c=.o)
 
 cJSON := includes/cJSON

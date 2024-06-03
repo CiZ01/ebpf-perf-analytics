@@ -153,7 +153,7 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
     }
 
     free(buffer);
-    //free(rodata);
+    // free(rodata);
     return 0;
 }
 
@@ -413,8 +413,8 @@ static void poll_stats(const int key) // key is the id thread
 
 static void exit_cleanup(int signo)
 {
-    // if (interactive_mode)
-    //     inxpect_server__close();
+    if (interactive_mode)
+        inxpect_server__close();
 
     if (!do_accumulate && thread_printer)
         pthread_cancel(thread_printer);
@@ -565,6 +565,11 @@ int main(int argc, char **argv)
                 WARN);
     }
 
+    if (duration && interactive_mode)
+    {
+        fprintf(stdout, "[%s]: duration and interactive mode are mutually exclusive\n   Duration will have priority", WARN);
+    }
+
     // ------------------------------------------------
 
     // retrieve `prog_name` file descriptor by name
@@ -707,17 +712,17 @@ int main(int argc, char **argv)
 
     if (interactive_mode) // SERVER
     {
-        /*         err = inxpect_server__init_server(0); // port = 0 -> default 8080 port
-                if (err)
-                {
-                    exit_cleanup(0);
-                }
+        err = inxpect_server__init_server(0); // port = 0 -> default 8080 port
+        if (err)
+        {
+            exit_cleanup(0);
+        }
 
-                err = inxpect_server__start_and_polling();
-                if (err)
-                {
-                    exit_cleanup(0);
-                } */
+        err = inxpect_server__start_and_polling();
+        if (err)
+        {
+            exit_cleanup(0);
+        }
     }
     else
     {

@@ -231,19 +231,8 @@ static int psection__set_event(struct psection_t *psection, struct event *event,
     return 0;
 }
 
-static void psection__get_all(struct psection_t *psections)
-{
-    for (int i = 0; i < MAX_PSECTIONS; i++)
-    {
-        if (psections[i].record)
-        {
-            fprintf(stdout, "[%s]: %s\n", INFO, psections[i].record->name);
-        }
-    }
-}
-
 // get all psection in json
-static void psection__get_all_json(char *json)
+static void psection_name__get_all_json(char *json)
 {
     json[0] = '[';
     for (int i = 0; i < MAX_PSECTIONS; i++)
@@ -379,6 +368,17 @@ static int percput_output__clean_and_init(int map_output_fd, int running_cpu)
     free(percpu_values);
 
     return 0;
+}
+
+static void record__get_all(struct record *records)
+{
+    for (int i = 0; i < MAX_PSECTIONS; i++)
+    {
+        if (!psections[i].record)
+            break;
+        memcpy(&records[i], psections[i].record, sizeof(struct record));
+    }
+    return;
 }
 
 static struct record *record__get_by_psection_name(char *name)

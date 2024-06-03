@@ -29,7 +29,7 @@ struct InxpectClient {
 
 impl InxpectClient {
     fn new(addr: String, port: i32) -> Self {
-        Self {
+        Self { // !! This is a bug, the unwrap should be handled
             stream: TcpStream::connect(format!("{}:{}", addr, port)).unwrap(),
         }
     }
@@ -60,6 +60,24 @@ impl InxpectClient {
 
     fn request_get_psections(&mut self) -> io::Result<Value> {
         let message = InxpectServerMessage::new(4, 0, Value::Null);
+
+        match self.send_message(message) {
+            Ok(()) => match self.receive_message() {
+                Ok(message) => match message.value {
+                    0 => Ok(message.buffer),
+                    _ => Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        InxpectServerErr::get_err(message.value).to_string(),
+                    )),
+                },
+                Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Error during receive")),
+            },
+            Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Error during sending")),
+        }
+    }
+
+    fn request_records_get_all(&mut self) -> io::Result<Value> {
+        let message = InxpectServerMessage::new(5, 0, Value::Null);
 
         match self.send_message(message) {
             Ok(()) => match self.receive_message() {
@@ -154,6 +172,13 @@ impl Console {
                 }
                 self.pretty_print_get_psections();
             }
+            "records" => {
+                if get_command.len() > 1 {
+                    println!("{0} command not need arguments!", get_command[0]);
+                    // this could be a macro
+                }
+                self.pretty_print_get_records();
+            }
             _ => println!("Unkwon {0} command using get!", get_command[0]),
         }
     }
@@ -181,6 +206,18 @@ impl Console {
                 println!("Psections:");
                 for psection in psections.as_array().unwrap() {
                     println!("\t{}", psection);
+                }
+            }
+            Err(e) => println!("{}", e),
+        }
+    }
+
+    fn pretty_print_get_records(&mut self) {
+        match self.client.request_records_get_all() {
+            Ok(records) => {
+                println!("Records:");
+                for record in records.as_array().unwrap() {
+                    println!("\t{}", record);
                 }
             }
             Err(e) => println!("{}", e),
