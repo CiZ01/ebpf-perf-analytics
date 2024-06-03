@@ -10,7 +10,9 @@ enum inxpect_server__message_code_t
     INXPECT_SERVER__MESSAGE_CODE__EVENT_SET = 1,
     INXPECT_SERVER__MESSAGE_CODE__EVENT_GET = 2,
     INXPECT_SERVER__MESSAGE_CODE__SAMPLE_RATE_SET = 3,
-    INXPECT_SERVER__MESSAGE_CODE__PSECTIONS_GET = 4
+    INXPECT_SERVER__MESSAGE_CODE__PSECTIONS_GET = 4,
+    INXPECT_SERVER__MESSAGE_CODE__RECORDS_GET = 5,
+    INXPECT_SERVER__MESSAGE_CODE__MULTIPLEX_RATE_SET = 6
 };
 
 enum inxpect_server__message_error_t
@@ -54,6 +56,7 @@ int inxpect_response__event_get(int sock, struct inxpect_server__message_t *msg)
 int inxpect_response__sample_rate_set(int sock, struct inxpect_server__message_t *msg);
 int inxpect_response__psections_get(int sock, struct inxpect_server__message_t *msg);
 int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server__message_t *msg);
+int inxpect_respose__records_get(int sock, struct inxpect_server__message_t *msg);
 // ----------------------------
 
 #endif // __INXPECT_SERVER_H__

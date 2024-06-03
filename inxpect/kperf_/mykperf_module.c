@@ -274,7 +274,7 @@ static int __disable_event(__u64 reg, __u64 event, int cpu)
     {
         if (temp->event == event && temp->reg == reg + FIRST_MSR_EV_SELECT_REG && temp->cpu == cpu)
         {
-            if (cpu < -1)
+            if (cpu == -1)
             {
                 for_each_online_cpu(cpu)
                 {

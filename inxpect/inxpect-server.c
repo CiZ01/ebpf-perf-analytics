@@ -337,6 +337,50 @@ int inxpect_response__stats_get_by_psection_name(int sock, struct inxpect_server
     return 0;
 }
 
+int inxpect_respose__records_get(int sock, struct inxpect_server__message_t *msg)
+{
+    cJSON *root = cJSON_Parse(msg->buffer);
+    cJSON *psection_name = cJSON_GetObjectItemCaseSensitive(root, "name");
+    if (!cJSON_IsString(psection_name))
+    {
+        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INVALID;
+        msg->buffer = NULL;
+        sendMessage(sock, *msg);
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    cJSON_Delete(root);
+
+    struct record_array *record = record__get_by_psection_name(psection_name->valuestring);
+    if (!record)
+    {
+        msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+        msg->value = INXPECT_SERVER__MESSAGE_ERROR__INTERNAL;
+        msg->buffer = NULL;
+        sendMessage(sock, *msg);
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
+    msg->value = INXPECT_SERVER__MESSAGE_ERROR__NONE;
+
+    cJSON *buffer_json = cJSON_CreateObject();
+    cJSON_AddStringToObject(buffer_json, "name", record->name);
+    cJSON_AddNumberToObject(buffer_json, "value", record->value);
+    cJSON_AddNumberToObject(buffer_json, "run_cnt", record->run_cnt);
+    cJSON_AddNumberToObject(buffer_json, "counter", record->counter);
+
+    msg->buffer = cJSON_Print(buffer_json);
+    sendMessage(sock, *msg);
+
+    cJSON_Delete(buffer_json);
+
+    return 0;
+}
+
 int handler()
 {
     struct inxpect_server__message_t *message = malloc(sizeof(struct inxpect_server__message_t));

@@ -231,8 +231,19 @@ static int psection__set_event(struct psection_t *psection, struct event *event,
     return 0;
 }
 
+static void psection__get_all(struct psection_t *psections)
+{
+    for (int i = 0; i < MAX_PSECTIONS; i++)
+    {
+        if (psections[i].record)
+        {
+            fprintf(stdout, "[%s]: %s\n", INFO, psections[i].record->name);
+        }
+    }
+}
+
 // get all psection in json
-static void psection__get_all(char *json)
+static void psection__get_all_json(char *json)
 {
     json[0] = '[';
     for (int i = 0; i < MAX_PSECTIONS; i++)
@@ -344,11 +355,17 @@ static int percput_output__clean_and_init(int map_output_fd, int running_cpu)
             break;
         }
 
-        memcpy(percpu_values[running_cpu].counters, psections[i_sec].record->counters,
-               sizeof(psections[i_sec].record->counters));
-        memcpy(percpu_values[running_cpu].name, psections[i_sec].record->name, 16);
-        memset(percpu_values[running_cpu].run_cnts, 0, sizeof(percpu_values[running_cpu].run_cnts));
-        memset(percpu_values[running_cpu].values, 0, sizeof(percpu_values[running_cpu].values));
+        // init the first cpu
+        memcpy(percpu_values[0].counters, psections[i_sec].record->counters, sizeof(psections[i_sec].record->counters));
+        memcpy(percpu_values[0].name, psections[i_sec].record->name, 16);
+        memset(percpu_values[0].run_cnts, 0, sizeof(percpu_values[0].run_cnts));
+        memset(percpu_values[0].values, 0, sizeof(percpu_values[0].values));
+
+        // copy the first cpu to the others
+        for (int cpu = 0; cpu < nr_cpus; cpu++)
+        {
+            memcpy(&percpu_values[cpu], &percpu_values[0], sizeof(struct record));
+        }
 
         err = bpf_map_update_elem(map_output_fd, &i_sec, percpu_values, BPF_ANY);
         if (err)
@@ -364,7 +381,7 @@ static int percput_output__clean_and_init(int map_output_fd, int running_cpu)
     return 0;
 }
 
-static struct record *stats__get_by_psection_name(char *name)
+static struct record *record__get_by_psection_name(char *name)
 {
     struct psection_t *psection = psection__get_by_name(name);
     if (!psection)
@@ -373,4 +390,5 @@ static struct record *stats__get_by_psection_name(char *name)
     }
     return psection->record;
 }
+
 #endif // __INXPECT_H__

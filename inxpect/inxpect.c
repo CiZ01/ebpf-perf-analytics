@@ -48,6 +48,7 @@ int do_accumulate = 0;
 // multiplexed map
 struct record *multiplexed_data;
 int multiplexed_mode = 0;
+int multiplex_rate = 0;
 
 // events
 char *arg__event = NULL;
@@ -111,7 +112,7 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
     fd = get_rodata_map_fd(prog_fd);
     if (fd < 0)
     {
-        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        fprintf(stderr, "[%s]: during finding rodata map\n", ERR);
         return -1;
     }
 
@@ -136,21 +137,23 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
     }
 
     // parse the part of the buffer that contains the sections
-    // struct rodata *rodata = (struct rodata *)buffer;
-    struct rodata *rodata = malloc(sizeof(struct rodata));
-    memcpy(rodata, buffer, sizeof(buffer));
+    struct rodata *rodata = (struct rodata *)buffer;
+    // struct rodata *rodata = calloc(1, sizeof(struct rodata));
+    //  memcpy(rodata, buffer, sizeof(struct rodata));
+    // rodata = (struct rodata *)buffer;
 
     for (int i = 0; i < MAX_PSECTIONS; i++)
     {
         if (rodata->sections[i][0] == '\0')
         {
+            printf("\nrodata: %d\n", i);
             break;
         }
         strncpy(psections_name_list[i], rodata->sections[i], sizeof(rodata->sections[i]));
     }
 
     free(buffer);
-    free(rodata);
+    //free(rodata);
     return 0;
 }
 
@@ -161,7 +164,7 @@ static int run_count__get()
     fd = get_bss_map_fd(prog_fd);
     if (fd < 0)
     {
-        fprintf(stderr, "[%s]: during finding data map\n", ERR);
+        fprintf(stderr, "[%s]: during finding bss map\n", ERR);
         return -1;
     }
 
@@ -416,9 +419,6 @@ static void exit_cleanup(int signo)
     if (!do_accumulate && thread_printer)
         pthread_cancel(thread_printer);
 
-    fprintf(stdout, "diocxa");
-    fflush(stdout);
-
     // kill threads poll stats
     for (int i = 0; i < MAX_PSECTIONS; i++)
     {
@@ -478,7 +478,7 @@ int main(int argc, char **argv)
 {
     int err, opt;
     // retrieve opt
-    while ((opt = getopt(argc, argv, "n:e:C:s:t:aic")) != -1)
+    while ((opt = getopt(argc, argv, "n:e:C:s:t:r:aic")) != -1)
     {
         switch (opt)
         {
@@ -516,6 +516,11 @@ int main(int argc, char **argv)
             break;
         case 'd':
             duration = atoi(optarg);
+            break;
+        case 'r':
+            multiplexed_mode = 1; // not used
+            multiplex_rate = atoi(optarg);
+            // multiplex rate can not be setted here because the prog fd is not yet retrieved
             break;
         case 'a':
             do_accumulate = 1;
@@ -571,6 +576,13 @@ int main(int argc, char **argv)
     }
 
     // at this point the we are sure that the program is loaded
+
+    if (multiplex_rate)
+    {
+        err = multiplex__set_rate(multiplex_rate);
+        if (err)
+            exit_cleanup(0); // check this, I think will be not safe
+    }
 
     // retrieve the psection from xdp program
     char psections_name_list[MAX_PSECTIONS][MAX_PROG_FULL_NAME] = {0};
