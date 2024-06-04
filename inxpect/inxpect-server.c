@@ -17,6 +17,8 @@
 #include "inxpect.h"
 #include "inxpect-server.h"
 
+#define DEBUG_PRINT(fmt, args...) fprintf(stdout, "[%s]: " fmt, DEBUG, ##args)
+
 int server_fd, client_socket, opt = 1;
 struct sockaddr_in address;
 int addrlen = sizeof(address);
@@ -49,14 +51,13 @@ void inxpect_server__message_to_json(struct inxpect_server__message_t *message, 
         cJSON_AddStringToObject(root, "buffer", "");
     }
 
-    char *json_string = cJSON_Print(root);
-    strcpy(json, json_string);
+    json = cJSON_Print(root);
 
     fprintf(stdout, "[%s]: json: %s\n", INFO, json);
     fflush(stdout);
 
     cJSON_Delete(root);
-    free(json_string);
+    // free(json_string);
 
     return;
 }
@@ -290,17 +291,17 @@ int inxpect_response__psections_get(int sock, struct inxpect_server__message_t *
             cJSON_AddItemToArray(psections_list, cJSON_Parse(buff));
         }
     }
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "code", INXPECT_SERVER__MESSAGE_CODE__PSECTIONS_GET);
     cJSON_AddNumberToObject(root, "value", INXPECT_SERVER__MESSAGE_ERROR__NONE);
     cJSON_AddItemToObject(root, "buffer", psections_list);
 
     char *json = cJSON_Print(root);
-    fprintf(stdout, "[%s]: response: %s\n", INFO, json);
-    fflush(stdout);
+
     send(sock, json, strlen(json), 0);
     cJSON_Delete(root);
-    free(json);
+    // free(json);
 
     return 0;
 }
@@ -402,7 +403,7 @@ int inxpect_response__records_get_all(int sock, struct inxpect_server__message_t
 {
     struct record records[MAX_PSECTIONS] = {0};
     record__get_all(records);
-    if (records[0].name[0] == '\0') // !! I don't know if this works
+    if (records[0].name[0] == '\0')
     {
         msg->code = INXPECT_SERVER__MESSAGE_CODE__RESPONSE;
         msg->value = INXPECT_SERVER__MESSAGE_ERROR__INTERNAL;
@@ -451,11 +452,16 @@ int inxpect_response__records_get_all(int sock, struct inxpect_server__message_t
         cJSON_AddItemToArray(buffer_json, record_json);
     }
 
-    msg->buffer = cJSON_Print(buffer_json);
-    sendMessage(sock, *msg);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "code", INXPECT_SERVER__MESSAGE_CODE__PSECTIONS_GET);
+    cJSON_AddNumberToObject(root, "value", INXPECT_SERVER__MESSAGE_ERROR__NONE);
+    cJSON_AddItemToObject(root, "buffer", buffer_json);
 
-    cJSON_Delete(buffer_json);
+    char *json = cJSON_Print(root);
 
+    send(sock, json, strlen(json), 0);
+
+    cJSON_Delete(root);
     return 0;
 }
 

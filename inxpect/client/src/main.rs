@@ -28,9 +28,11 @@ struct InxpectClient {
 }
 
 impl InxpectClient {
-    fn new(addr: String, port: i32) -> Self {
-        Self { // !! This is a bug, the unwrap should be handled
-            stream: TcpStream::connect(format!("{}:{}", addr, port)).unwrap(),
+    fn new(addr: String, port: i32) -> Result<Self,String> {
+        // check if the connection is successful otherwise return None
+        match TcpStream::connect(format!("{}:{}", addr, port)) {
+            Ok(stream) => Ok(Self { stream }),
+            Err(_) => Err(String::from("Error during connection")),
         }
     }
 
@@ -139,6 +141,7 @@ impl Console {
             let readline = rl.readline(">> ");
             match readline {
                 Ok(line) => {
+                    rl.add_history_entry(line.as_str());
                     let command: Vec<&str> = line.trim().split_whitespace().collect();
                     if command[0] == "quit" {
                         break;
@@ -240,9 +243,27 @@ impl Console {
     }
 }
 
+struct Plot {
+    client: InxpectClient,
+}
+
+impl Plot {
+    fn new(client: InxpectClient ) -> Self {
+        Self { client }
+    }
+
+    fn poll_stats()
+}
 fn main() -> io::Result<()> {
-    let ix = InxpectClient::new("0.0.0.0".to_string(), 8080);
-    let mut console = Console::new(ix);
-    console.run()?;
-    Ok(())
+    match InxpectClient::new("0.0.0.0".to_string(), 8080) {
+        Ok(ix) => {
+            let mut console = Console::new(ix);
+            console.run()?;
+            Ok(())
+        }
+        Err(e) => {
+            Err(io::Error::new(io::ErrorKind::Other, e))
+        }
+
+    }
 }
