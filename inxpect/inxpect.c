@@ -63,15 +63,14 @@ int interactive_mode = 0;
 static void usage(){
     fprintf(stderr, "Usage: inxpect [options] <program_name>\n");
     fprintf(stderr, "Options:\n");
-    fprintf(stderr, "  -h, --help\t\t\tPrint this help message\n");
-    fprintf(stderr, "  -n, --name\t\t\tName of the program\n");
-    fprintf(stderr, "  -e, --event\t\t\tEvent to monitor\n");
-    fprintf(stderr, "  -s, --sample-rate\t\tSample rate\n");
-    fprintf(stderr, "  -d, --duration\t\tDuration of the monitoring\n");
-    fprintf(stderr, "  -a, --accumulate\t\tAccumulate values\n");
-    fprintf(stderr, "  -m, --multiplex\t\tMultiplex mode\n");
-    fprintf(stderr, "  -r, --multiplex-rate\t\tMultiplex rate\n");
-    fprintf(stderr, "  -o, --output\t\t\tOutput file\n");
+    fprintf(stderr, "  -h,  Print this help message\n");
+    fprintf(stderr, "  -n,  Name of the program\n");
+    fprintf(stderr, "  -e,  Event to monitor\n");
+    fprintf(stderr, "  -s,  Sample rate\n");
+    fprintf(stderr, "  -d,  Duration of the monitoring\n");
+    fprintf(stderr, "  -a,  Accumulate values\n");
+    fprintf(stderr, "  -r,  Multiplex rate\n");
+    fprintf(stderr, "  -o,  Output file\n");
     exit(1);
 }
 
@@ -428,8 +427,8 @@ static void poll_stats(const int key) // key is the id thread
 
 static void exit_cleanup(int signo)
 {
-    if (interactive_mode)
-        inxpect_server__close();
+    // if (interactive_mode)
+    //     inxpect_server__close();
 
     if (!do_accumulate && thread_printer)
         pthread_cancel(thread_printer);
@@ -464,8 +463,9 @@ static void exit_cleanup(int signo)
 
             if (psections[i_sec].metrics[j]->enabled)
             {
+                fprintf(stdout, "[%s]: disabling event %s\n", DEBUG, psections[i_sec].metrics[j]->name);
                 err = event__disable(psections[i_sec].metrics[j], running_cpu);
-                if (err)
+                if (err < 0)
                 {
                     fprintf(stderr, "[%s]: during disabling event %s\n", ERR, psections[i_sec].metrics[j]->name);
                 }
@@ -619,6 +619,7 @@ int main(int argc, char **argv)
     }
 
     // setting psections
+    int nr_psections = 0;
     for (int i_sec = 0; i_sec < MAX_PSECTIONS; i_sec++)
     {
         if (psections_name_list[i_sec][0] == '\0')
@@ -675,6 +676,7 @@ int main(int argc, char **argv)
 
             psections[i_sec].record->counters[(i % 4)] = psections[i_sec].metrics[i]->reg_h;
         }
+        nr_psections++;
     }
 
     if (sample_rate)
@@ -703,7 +705,7 @@ int main(int argc, char **argv)
     if (duration)
         signal(SIGALRM, exit_cleanup);
 
-    err = multiplex__set_num_counters(nr_selected_events);
+    err = multiplex__set_num_counters(nr_selected_events*nr_psections);
     if (err)
         exit_cleanup(0);
 
@@ -730,25 +732,25 @@ int main(int argc, char **argv)
 
     alarm(duration);
 
-    if (interactive_mode) // SERVER
-    {
-        err = inxpect_server__init_server(0); // port = 0 -> default 8080 port
-        if (err)
-        {
-            exit_cleanup(0);
-        }
+    // if (interactive_mode) // SERVER
+    // {
+    //     err = inxpect_server__init_server(0); // port = 0 -> default 8080 port
+    //     if (err)
+    //     {
+    //         exit_cleanup(0);
+    //     }
 
-        err = inxpect_server__start_and_polling();
-        if (err)
-        {
-            exit_cleanup(0);
-        }
-    }
-    else
-    {
-        pause(); // wait for signal
-    }
-
+    //     err = inxpect_server__start_and_polling();
+    //     if (err)
+    //     {
+    //         exit_cleanup(0);
+    //     }
+    // }
+    // else
+    // {
+    //     pause(); // wait for signal
+    // }
+    pause();
     exit_cleanup(0);
     return 0;
 }

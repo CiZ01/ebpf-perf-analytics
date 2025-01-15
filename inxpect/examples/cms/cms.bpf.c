@@ -29,6 +29,13 @@
 #include "fasthash.h"
 
 
+// Inxpect
+#include "mykperf_module.h"
+
+BPF_MYKPERF_INIT_TRACE();
+DEFINE_SECTIONS("parsing", "part2");
+
+
 #define _SEED_HASHFN 77
 
 #define HASHFN_N 4
@@ -130,23 +137,29 @@ static __always_inline int handle_pkt(void *data, void *data_end, struct pkt_5tu
 SEC("xdp")
 int cms(struct xdp_md *ctx)
 {
-    void *data_end = (void *)(long)ctx->data_end;
-    void *data = (void *)(long)ctx->data;
+  BPF_MYKPERF_START_TRACE_MULTIPLEXED(parsing);
 
-    __u32 zero = 0;
-    struct countmin *cm = bpf_map_lookup_elem(&countmin, &zero);
-    if (!cm)
-        return XDP_DROP;
+  void *data_end = (void *)(long)ctx->data_end;
+  void *data = (void *)(long)ctx->data;
+  BPF_MYKPERF_END_TRACE_MULTIPLEXED(parsing);
 
-    struct pkt_5tuple pkt1;
-    __u16 pkt1_hashes[4];
-
-    int ret = handle_pkt(data, data_end, &pkt1);
-    if (ret)
-        return ret;
-    hash(&pkt1, sizeof(pkt1), pkt1_hashes);
-    countmin_add(cm, pkt1_hashes);
+  __u32 zero = 0;
+  struct countmin *cm = bpf_map_lookup_elem(&countmin, &zero);
+  if (!cm)
     return XDP_DROP;
+
+  struct pkt_5tuple pkt1;
+  __u16 pkt1_hashes[4];
+
+  int ret = handle_pkt(data, data_end, &pkt1);
+  if (ret)
+    return ret;
+  BPF_MYKPERF_START_TRACE_MULTIPLEXED(part2);
+  hash(&pkt1, sizeof(pkt1), pkt1_hashes);
+  countmin_add(cm, pkt1_hashes);
+  BPF_MYKPERF_END_TRACE_MULTIPLEXED(part2);
+
+  return XDP_DROP;
 }
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

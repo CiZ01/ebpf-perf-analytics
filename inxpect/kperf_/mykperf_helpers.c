@@ -269,6 +269,9 @@ int disable_event(__u64 event, __u64 reg, int cpu) {
       .cpu = cpu,
   };
 
+  fprintf(stdout, "Disabling event %llx on cpu %d from reg: %llx\n", event, cpu,
+          reg);
+
   int fd;
   fd = open(DEVICE_FILE, O_RDWR);
   if (fd < 0) {
