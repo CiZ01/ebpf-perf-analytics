@@ -97,7 +97,6 @@ static int test(char *filename, int nr_tests)
 			}
 			j++;
 		}
-		printf("prog #%d: map ids %d %d\n", i, map0_fds[i], map1_fds[i]);
 	}
 
 	/* current load_bpf_file has perf_event_open default pid = -1

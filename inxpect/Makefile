@@ -4,7 +4,7 @@ SRCS := $(wildcard *.c)
 OBJS := $(SRCS:.c=.o)
 
 cJSON := includes/cJSON
-KHEADER:= kperf_/
+KHEADER:= kperf_
 HELPERS_OBJ := $(KHEADER)/mykperf_helpers.o
 
 .PHONY: all clean

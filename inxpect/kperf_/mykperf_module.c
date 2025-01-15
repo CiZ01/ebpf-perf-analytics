@@ -11,7 +11,6 @@
 #include "mykperf_module.h"
 #include "mykperf_ioctl.h"
 
-static __u64 mykperf_rdpmc(__u8 counter, __u32 low, __u32 high);
 static __u64 __enable_event(__u64 event, int cpus);
 static int __disable_event(__u64 reg, __u64 event, int cpu);
 static void __add_event(__u64 reg, __u64 event, int cpu);
@@ -33,12 +32,6 @@ MODULE_DESCRIPTION("A Dummy Kernel Module");
 dev_t dev_num;
 static struct cdev mykperf_cdev;
 static struct class *mykperf_class = NULL;
-
-static __u64 mykperf_read_rdpmc(__u8 counter, __u32 low, __u32 high)
-{
-    mykperf_rdpmc(counter, low, high);
-    return ((__u64)high << 32) | low;
-}
 
 __bpf_kfunc void bpf_mykperf__fence(void)
 {
@@ -200,7 +193,7 @@ static __u64 __enable_event(__u64 event, int cpu)
                 err = rdmsr_safe_on_cpu(_cpu, r, &l, &h);
                 if (err)
                 {
-                    printk("Error reading MSR %x register on cpu %d: \n", r, _cpu, err);
+                    pr_err("Error reading MSR %x register on cpu %d: \n", r, _cpu, err);
                     return -1;
                 }
 

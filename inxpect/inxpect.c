@@ -18,7 +18,7 @@
 
 // my modules
 #include "inxpect.h"
-#include "inxpect-server.h"
+// #include "inxpect-server.h"
 #include "mykperf_helpers.h"
 
 struct event metrics[METRICS_NR] = {
@@ -59,6 +59,21 @@ int sample_rate = 0;
 
 // server
 int interactive_mode = 0;
+
+static void usage(){
+    fprintf(stderr, "Usage: inxpect [options] <program_name>\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -h, --help\t\t\tPrint this help message\n");
+    fprintf(stderr, "  -n, --name\t\t\tName of the program\n");
+    fprintf(stderr, "  -e, --event\t\t\tEvent to monitor\n");
+    fprintf(stderr, "  -s, --sample-rate\t\tSample rate\n");
+    fprintf(stderr, "  -d, --duration\t\tDuration of the monitoring\n");
+    fprintf(stderr, "  -a, --accumulate\t\tAccumulate values\n");
+    fprintf(stderr, "  -m, --multiplex\t\tMultiplex mode\n");
+    fprintf(stderr, "  -r, --multiplex-rate\t\tMultiplex rate\n");
+    fprintf(stderr, "  -o, --output\t\t\tOutput file\n");
+    exit(1);
+}
 
 // from bpftool
 static int prog_fd_by_nametag(char nametag[MAX_PROG_FULL_NAME])
@@ -146,7 +161,7 @@ static int psections__get_list(char psections_name_list[MAX_PSECTIONS][MAX_PROG_
     {
         if (rodata->sections[i][0] == '\0')
         {
-            printf("\nrodata: %d\n", i);
+            // printf("\nrodata: %d\n", i); DEBUG
             break;
         }
         strncpy(psections_name_list[i], rodata->sections[i], sizeof(rodata->sections[i]));
@@ -193,7 +208,7 @@ static int multiplex__set_rate(int multiplex_rate)
     }
 
     struct bpf_map_info info = {0};
-    int info_len = sizeof(info);
+    __u32 info_len = sizeof(info);
 
     int err = bpf_map_get_info_by_fd(fd, &info, &info_len);
     if (err)
@@ -478,7 +493,7 @@ int main(int argc, char **argv)
 {
     int err, opt;
     // retrieve opt
-    while ((opt = getopt(argc, argv, "n:e:C:s:t:r:aic")) != -1)
+    while ((opt = getopt(argc, argv, "hn:e:s:t:r:ad:")) != -1)
     {
         switch (opt)
         {
@@ -528,8 +543,13 @@ int main(int argc, char **argv)
         case 'i':
             interactive_mode = 1;
             break;
+        case 'h':
+            usage();
+            exit_cleanup(0);
+            break;
         case '?':
             fprintf(stderr, "%s: invalid option\n", ERR);
+            usage();
             exit_cleanup(0);
             break;
         }
